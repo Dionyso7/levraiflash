@@ -61,6 +61,7 @@ function getClientId() {
 }
 
 function createVariant(overrides = {}) {
+  const isMaster = overrides.isMaster ?? false;
   return {
     id: overrides.id || crypto.randomUUID(),
     name: overrides.name || 'Nouvelle variante',
@@ -69,8 +70,8 @@ function createVariant(overrides = {}) {
     negativePrompt: overrides.negativePrompt || '',
     aspectRatio: overrides.aspectRatio || '1:1',
     enabledByDefault: overrides.enabledByDefault ?? true,
-    isMaster: overrides.isMaster ?? false,
-    sourceMode: overrides.isMaster ? 'source' : (overrides.sourceMode || 'master'),
+    isMaster,
+    sourceMode: isMaster ? 'source' : 'master',
   };
 }
 
@@ -93,6 +94,15 @@ function createPreset(overrides = {}) {
     resolution: overrides.resolution || '1K',
     outputFormat: overrides.outputFormat || 'png',
     variants: ensureSingleMaster(variants),
+  };
+}
+
+function createSourceImage(file, previewUrl) {
+  return {
+    id: crypto.randomUUID(),
+    file,
+    previewUrl,
+    name: file?.name || 'reference.jpg',
   };
 }
 
@@ -141,7 +151,7 @@ function ensureSingleMaster(variants) {
     return {
       ...variant,
       isMaster,
-      sourceMode: isMaster ? 'source' : (variant.sourceMode || 'master'),
+      sourceMode: isMaster ? 'source' : 'master',
     };
   });
 }
@@ -163,7 +173,7 @@ function getEffectiveVariantConfig(preset, variant) {
     aspectRatio: variant?.aspectRatio || preset?.aspectRatio || '1:1',
     resolution: preset?.resolution || '1K',
     outputFormat: preset?.outputFormat || 'png',
-    sourceMode: variant?.isMaster ? 'source' : (variant?.sourceMode || 'master'),
+    sourceMode: variant?.isMaster ? 'source' : 'master',
     usesPromptOverride: Boolean(variant?.promptOverride),
     usesVariantNegativePrompt: Boolean(variant?.negativePrompt),
   };
@@ -184,8 +194,7 @@ function formatDate(iso) {
 
 export default function App() {
   const [step, setStep] = useState('capture');
-  const [photo, setPhoto] = useState(null);
-  const [photoFile, setPhotoFile] = useState(null);
+  const [sourceImages, setSourceImages] = useState([]);
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [editingPreset, setEditingPreset] = useState(null);
@@ -205,7 +214,7 @@ export default function App() {
   const fileRef = useRef(null);
   const clientIdRef = useRef(getClientId());
   const activeGenerationRef = useRef(0);
-  const photoUrlRef = useRef(null);
+  const sourcePreviewUrlsRef = useRef(new Set());
 
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
@@ -241,17 +250,41 @@ export default function App() {
     setShowHistory(false);
   }, []);
 
-  const applyNewPhoto = useCallback((file, previewUrl) => {
-    if (!file || !previewUrl) return;
-    resetGenerationContext();
-    if (photoUrlRef.current) {
-      URL.revokeObjectURL(photoUrlRef.current);
+  const rememberPreviewUrl = useCallback((previewUrl) => {
+    if (previewUrl) {
+      sourcePreviewUrlsRef.current.add(previewUrl);
     }
-    photoUrlRef.current = previewUrl;
-    setPhoto(previewUrl);
-    setPhotoFile(file);
+  }, []);
+
+  const releasePreviewUrl = useCallback((previewUrl) => {
+    if (previewUrl && sourcePreviewUrlsRef.current.has(previewUrl)) {
+      URL.revokeObjectURL(previewUrl);
+      sourcePreviewUrlsRef.current.delete(previewUrl);
+    }
+  }, []);
+
+  const clearSourceImages = useCallback(() => {
+    sourcePreviewUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl));
+    sourcePreviewUrlsRef.current.clear();
+    setSourceImages([]);
+  }, []);
+
+  const addSourceImages = useCallback((items) => {
+    const nextItems = Array.isArray(items) ? items.filter((item) => item?.file && item?.previewUrl) : [];
+    if (nextItems.length === 0) return;
+    resetGenerationContext();
+    nextItems.forEach((item) => rememberPreviewUrl(item.previewUrl));
+    setSourceImages((current) => [...current, ...nextItems]);
     setStep('preset');
-  }, [resetGenerationContext]);
+  }, [rememberPreviewUrl, resetGenerationContext]);
+
+  const removeSourceImage = useCallback((imageId) => {
+    const image = sourceImages.find((item) => item.id === imageId);
+    if (!image) return;
+    resetGenerationContext();
+    releasePreviewUrl(image.previewUrl);
+    setSourceImages((current) => current.filter((item) => item.id !== imageId));
+  }, [releasePreviewUrl, resetGenerationContext, sourceImages]);
 
   const loadPresets = useCallback(async () => {
     setLoadingPresets(true);
@@ -297,6 +330,11 @@ export default function App() {
     });
   }, [selectedPreset, editingPreset]);
 
+  useEffect(() => () => {
+    sourcePreviewUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl));
+    sourcePreviewUrlsRef.current.clear();
+  }, []);
+
   const startCamera = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -326,16 +364,17 @@ export default function App() {
     canvas.toBlob((blob) => {
       const file = new File([blob], 'product.jpg', { type: 'image/jpeg' });
       const previewUrl = URL.createObjectURL(blob);
-      applyNewPhoto(file, previewUrl);
+      addSourceImages([createSourceImage(file, previewUrl)]);
       stopCamera();
     }, 'image/jpeg', 0.92);
-  }, [applyNewPhoto, stopCamera]);
+  }, [addSourceImages, stopCamera]);
 
   const handleFileUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    applyNewPhoto(file, URL.createObjectURL(file));
-  }, [applyNewPhoto]);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    addSourceImages(files.map((file) => createSourceImage(file, URL.createObjectURL(file))));
+    e.target.value = '';
+  }, [addSourceImages]);
 
   const persistHistoryEntry = useCallback(async (entry) => {
     const res = await fetch(`${API}/history`, {
@@ -360,7 +399,7 @@ export default function App() {
 
     const poll = async () => {
       if (runId && activeGenerationRef.current !== runId) {
-        reject(new Error('Generation ignoree car une nouvelle photo a ete chargee'));
+        reject(new Error('Generation ignoree car les references source ont change'));
         return;
       }
 
@@ -406,7 +445,7 @@ export default function App() {
   }), []);
 
   const generate = useCallback(async () => {
-    if (!photoFile || !selectedPreset || selectedVariantIds.length === 0) return;
+    if (sourceImages.length === 0 || !selectedPreset || selectedVariantIds.length === 0) return;
 
     const variants = selectedPreset.variants.filter((variant) => selectedVariantIds.includes(variant.id));
     const masterVariant = getMasterVariant(selectedPreset, selectedVariantIds);
@@ -424,8 +463,15 @@ export default function App() {
     setCurrentVariantName('');
 
     try {
-      const imageBase64 = await toBase64(photoFile);
       const sessionId = crypto.randomUUID();
+      const sourcePayloads = await Promise.all(sourceImages.map(async (image, index) => {
+        const imageBase64 = await toBase64(image.file);
+        const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+        return {
+          imageBase64,
+          uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
+        };
+      }));
       const nextAssets = [];
       const secondaryVariants = variants.filter((variant) => variant.id !== masterVariant.id);
 
@@ -435,9 +481,11 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          generationSessionId: sessionId,
           preset: selectedPreset,
           variant: { ...masterVariant, sourceMode: 'source' },
-          imageBase64,
+          imageBase64List: sourcePayloads.map((item) => item.imageBase64),
+          uploadFileNames: sourcePayloads.map((item) => item.uploadFileName),
         }),
       });
 
@@ -446,7 +494,6 @@ export default function App() {
         throw new Error(masterData.error || 'Erreur de génération du master');
       }
 
-      const sourceImageUrl = masterData.sourceImageUrl;
       const masterUrls = await pollTask(masterData.taskId, {
         runId,
         onProgress: (ratio) => {
@@ -479,16 +526,14 @@ export default function App() {
 
         const secondaryResults = await Promise.allSettled(
           secondaryVariants.map(async (variant) => {
-            const referenceImageUrls = variant.sourceMode === 'source'
-              ? [sourceImageUrl]
-              : [sourceImageUrl, masterImageUrl].filter(Boolean);
             const res = await fetch(`${API}/generate`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+                generationSessionId: sessionId,
                 preset: selectedPreset,
-                variant,
-                referenceImageUrls,
+                variant: { ...variant, sourceMode: 'master' },
+                referenceImageUrls: [masterImageUrl],
               }),
             });
             const data = await res.json();
@@ -560,19 +605,14 @@ export default function App() {
         setCurrentVariantName('');
       }
     }
-  }, [photoFile, selectedPreset, selectedVariantIds, persistHistoryEntry, pollTask, loadHistory]);
+  }, [sourceImages, selectedPreset, selectedVariantIds, persistHistoryEntry, pollTask, loadHistory]);
 
   const reset = useCallback(() => {
     resetGenerationContext();
-    if (photoUrlRef.current) {
-      URL.revokeObjectURL(photoUrlRef.current);
-      photoUrlRef.current = null;
-    }
+    clearSourceImages();
     setStep('capture');
-    setPhoto(null);
-    setPhotoFile(null);
     stopCamera();
-  }, [resetGenerationContext, stopCamera]);
+  }, [clearSourceImages, resetGenerationContext, stopCamera]);
 
   const deleteHistory = async (taskId) => {
     try {
@@ -822,7 +862,7 @@ export default function App() {
         <div className="screen">
           <div className="page-intro">
             <h2 className="section-title"><Camera size={16} /> Capture produit</h2>
-            <p className="section-copy">Prends une photo propre puis passe sur tes presets de shooting pour lancer une serie complete.</p>
+            <p className="section-copy">Ajoute une ou plusieurs references produit, puis passe sur tes presets pour lancer une serie complete.</p>
           </div>
           <div className="viewfinder">
             <video ref={videoRef} autoPlay playsInline muted />
@@ -854,7 +894,6 @@ export default function App() {
               <span>Sessions recentes</span>
             </button>
           </div>
-          <input ref={fileRef} type="file" accept="image/*" onChange={handleFileUpload} hidden />
         </div>
       )}
 
@@ -867,12 +906,46 @@ export default function App() {
           </div>
 
           <div className="preview-card">
-            {photo ? (
-              <div className="preview-thumb"><img src={photo} alt="Produit" /></div>
+            {sourceImages.length > 0 ? (
+              <>
+                <div className="preview-card-head">
+                  <div>
+                    <strong>{sourceImages.length} reference{sourceImages.length > 1 ? 's' : ''} source</strong>
+                    <small>Ajoute par exemple une vue globale de l'objet et un gros plan de l'etiquette.</small>
+                  </div>
+                  <button className="btn-secondary" onClick={() => fileRef.current?.click()} disabled={generating}>
+                    <Plus size={16} />
+                    <span>Ajouter</span>
+                  </button>
+                </div>
+                <div className={`preview-grid ${sourceImages.length === 1 ? 'single' : ''}`}>
+                  {sourceImages.map((image, index) => (
+                    <div key={image.id} className="preview-item">
+                      <img src={image.previewUrl} alt={`Reference ${index + 1}`} />
+                      <div className="preview-meta">
+                        <strong>{index === 0 ? 'Vue principale' : `Reference ${index + 1}`}</strong>
+                        <small>{image.name}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-delete preview-remove"
+                        onClick={() => removeSourceImage(image.id)}
+                        disabled={generating}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
             ) : (
               <div className="preview-empty">
                 <Image size={28} />
-                <p>Ajoute une photo pour lancer les variantes. Tu peux quand meme créer et éditer tes presets maintenant.</p>
+                <p>Ajoute une ou plusieurs images de reference pour lancer les variantes. Tu peux quand meme creer et editer tes presets maintenant.</p>
+                <button className="btn-secondary" onClick={() => fileRef.current?.click()}>
+                  <Plus size={16} />
+                  <span>Ajouter des refs</span>
+                </button>
               </div>
             )}
           </div>
@@ -1018,17 +1091,14 @@ export default function App() {
                       </label>
                     </div>
                     <div className="variant-row">
-                      <label className="field">
-                        <span>Source de génération</span>
-                        <select
-                          value={variant.sourceMode}
-                          disabled={variant.isMaster}
-                          onChange={(e) => updateEditingVariant(variant.id, 'sourceMode', e.target.value)}
-                        >
-                          <option value="master">Depuis le master</option>
-                          <option value="source">Depuis la photo source</option>
-                        </select>
-                      </label>
+                      <div className="field">
+                        <span>Reference image</span>
+                        <div className="field-readonly">
+                          {variant.isMaster
+                            ? 'References source de la session courante'
+                            : 'Master asset de la session courante'}
+                        </div>
+                      </div>
                       <label className="checkbox-row master-row">
                         <input
                           type="checkbox"
@@ -1058,7 +1128,7 @@ export default function App() {
                       <div className="effective-grid">
                         <div>
                           <span className="detail-label">Source</span>
-                          <p>{variant.isMaster ? 'Photo source' : (effective.sourceMode === 'source' ? 'Photo source' : 'Master asset')}</p>
+                          <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
                         </div>
                         <div>
                           <span className="detail-label">Sortie</span>
@@ -1139,8 +1209,8 @@ export default function App() {
                         <strong>{variant.name}</strong>
                         <small>
                           {variant.isMaster
-                            ? 'Vue maître générée depuis la photo source'
-                            : `${variant.sourceMode === 'source' ? 'Source : photo d’origine' : 'Source : master asset'} · ${variant.promptAddon || 'Aucune consigne additionnelle'}`}
+                            ? 'Vue maître générée depuis les references source de la session'
+                            : `Source : master asset de la session courante · ${variant.promptAddon || 'Aucune consigne additionnelle'}`}
                         </small>
                       </div>
                       <span className="variant-ratio">{variant.aspectRatio}</span>
@@ -1149,7 +1219,7 @@ export default function App() {
                       <div className="variant-debug-grid">
                         <div>
                           <span className="detail-label">Source reelle</span>
-                          <p>{variant.isMaster ? 'Photo source' : (effective.sourceMode === 'source' ? 'Photo source' : 'Master asset')}</p>
+                          <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
                         </div>
                         <div>
                           <span className="detail-label">Payload</span>
@@ -1174,14 +1244,14 @@ export default function App() {
                 })}
               </div>
 
-              <button className="btn-main" disabled={!photoFile || generating || selectedVariantIds.length === 0} onClick={generate}>
+              <button className="btn-main" disabled={sourceImages.length === 0 || generating || selectedVariantIds.length === 0} onClick={generate}>
                 {generating ? (
                   <><span className="spinner" />Génération {currentVariantName ? `· ${currentVariantName}` : ''} · {Math.round(progress)}%</>
                 ) : (
                   <><Sparkles size={18} />Générer la série</>
                 )}
               </button>
-              {!photoFile && <p className="helper-text">Ajoute d'abord une photo pour lancer ce preset.</p>}
+              {sourceImages.length === 0 && <p className="helper-text">Ajoute d'abord une ou plusieurs references pour lancer ce preset.</p>}
               {generating && (
                 <div className="progress">
                   <div className="progress-fill" style={{ width: `${progress}%` }} />
@@ -1219,6 +1289,8 @@ export default function App() {
           </button>
         </div>
       )}
+
+      <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFileUpload} hidden />
     </div>
   );
 }
