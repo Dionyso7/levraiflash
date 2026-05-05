@@ -152,6 +152,23 @@ function getMasterVariant(preset, selectedIds) {
   return selectedVariants.find((variant) => variant.isMaster) || selectedVariants[0];
 }
 
+function getEffectiveVariantConfig(preset, variant) {
+  const promptBase = variant?.promptOverride || [preset?.basePrompt, variant?.promptAddon].filter(Boolean).join(', ');
+  const negativePrompt = variant?.negativePrompt || preset?.negativePrompt || '';
+
+  return {
+    prompt: [promptBase, negativePrompt ? `Avoid: ${negativePrompt}` : null].filter(Boolean).join(', '),
+    promptBase,
+    negativePrompt,
+    aspectRatio: variant?.aspectRatio || preset?.aspectRatio || '1:1',
+    resolution: preset?.resolution || '1K',
+    outputFormat: preset?.outputFormat || 'png',
+    sourceMode: variant?.isMaster ? 'source' : (variant?.sourceMode || 'master'),
+    usesPromptOverride: Boolean(variant?.promptOverride),
+    usesVariantNegativePrompt: Boolean(variant?.negativePrompt),
+  };
+}
+
 function themeMeta(theme) {
   return THEME_META[theme] || THEME_META.custom;
 }
@@ -187,6 +204,8 @@ export default function App() {
   const streamRef = useRef(null);
   const fileRef = useRef(null);
   const clientIdRef = useRef(getClientId());
+  const activeGenerationRef = useRef(0);
+  const photoUrlRef = useRef(null);
 
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
@@ -211,6 +230,28 @@ export default function App() {
       setHistory([]);
     }
   }, []);
+
+  const resetGenerationContext = useCallback(() => {
+    activeGenerationRef.current += 1;
+    setResults([]);
+    setError(null);
+    setProgress(0);
+    setGenerating(false);
+    setCurrentVariantName('');
+    setShowHistory(false);
+  }, []);
+
+  const applyNewPhoto = useCallback((file, previewUrl) => {
+    if (!file || !previewUrl) return;
+    resetGenerationContext();
+    if (photoUrlRef.current) {
+      URL.revokeObjectURL(photoUrlRef.current);
+    }
+    photoUrlRef.current = previewUrl;
+    setPhoto(previewUrl);
+    setPhotoFile(file);
+    setStep('preset');
+  }, [resetGenerationContext]);
 
   const loadPresets = useCallback(async () => {
     setLoadingPresets(true);
@@ -283,20 +324,18 @@ export default function App() {
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
     canvas.toBlob((blob) => {
-      setPhoto(URL.createObjectURL(blob));
-      setPhotoFile(new File([blob], 'product.jpg', { type: 'image/jpeg' }));
+      const file = new File([blob], 'product.jpg', { type: 'image/jpeg' });
+      const previewUrl = URL.createObjectURL(blob);
+      applyNewPhoto(file, previewUrl);
       stopCamera();
-      setStep('preset');
     }, 'image/jpeg', 0.92);
-  }, [stopCamera]);
+  }, [applyNewPhoto, stopCamera]);
 
   const handleFileUpload = useCallback((e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setPhoto(URL.createObjectURL(file));
-    setPhotoFile(file);
-    setStep('preset');
-  }, []);
+    applyNewPhoto(file, URL.createObjectURL(file));
+  }, [applyNewPhoto]);
 
   const persistHistoryEntry = useCallback(async (entry) => {
     const res = await fetch(`${API}/history`, {
@@ -316,10 +355,15 @@ export default function App() {
     return data;
   }, []);
 
-  const pollTask = useCallback((taskId, { onProgress } = {}) => new Promise((resolve, reject) => {
+  const pollTask = useCallback((taskId, { onProgress, runId } = {}) => new Promise((resolve, reject) => {
     let attempts = 0;
 
     const poll = async () => {
+      if (runId && activeGenerationRef.current !== runId) {
+        reject(new Error('Generation ignoree car une nouvelle photo a ete chargee'));
+        return;
+      }
+
       if (attempts >= 120) {
         reject(new Error('Timeout — génération trop longue'));
         return;
@@ -372,6 +416,8 @@ export default function App() {
       return;
     }
 
+    const runId = activeGenerationRef.current + 1;
+    activeGenerationRef.current = runId;
     setGenerating(true);
     setError(null);
     setProgress(5);
@@ -402,6 +448,7 @@ export default function App() {
 
       const sourceImageUrl = masterData.sourceImageUrl;
       const masterUrls = await pollTask(masterData.taskId, {
+        runId,
         onProgress: (ratio) => {
           setProgress(Math.max(5, Math.round(5 + ratio * (secondaryVariants.length ? 30 : 95))));
         },
@@ -432,14 +479,16 @@ export default function App() {
 
         const secondaryResults = await Promise.allSettled(
           secondaryVariants.map(async (variant) => {
-            const inputImageUrl = variant.sourceMode === 'source' ? sourceImageUrl : masterImageUrl;
+            const referenceImageUrls = variant.sourceMode === 'source'
+              ? [sourceImageUrl]
+              : [sourceImageUrl, masterImageUrl].filter(Boolean);
             const res = await fetch(`${API}/generate`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 preset: selectedPreset,
                 variant,
-                inputImageUrl,
+                referenceImageUrls,
               }),
             });
             const data = await res.json();
@@ -449,6 +498,7 @@ export default function App() {
             }
 
             const urls = await pollTask(data.taskId, {
+              runId,
               onProgress: (ratio) => {
                 progressMap[variant.id] = ratio;
                 updateParallelProgress();
@@ -493,30 +543,36 @@ export default function App() {
       };
 
       await persistHistoryEntry(entry);
+      if (activeGenerationRef.current !== runId) {
+        return;
+      }
       setResults(nextAssets);
       setStep('results');
       setProgress(100);
       await loadHistory();
     } catch (err) {
-      setError(err.message);
+      if (activeGenerationRef.current === runId) {
+        setError(err.message);
+      }
     } finally {
-      setGenerating(false);
-      setCurrentVariantName('');
+      if (activeGenerationRef.current === runId) {
+        setGenerating(false);
+        setCurrentVariantName('');
+      }
     }
   }, [photoFile, selectedPreset, selectedVariantIds, persistHistoryEntry, pollTask, loadHistory]);
 
   const reset = useCallback(() => {
+    resetGenerationContext();
+    if (photoUrlRef.current) {
+      URL.revokeObjectURL(photoUrlRef.current);
+      photoUrlRef.current = null;
+    }
     setStep('capture');
     setPhoto(null);
     setPhotoFile(null);
-    setResults([]);
-    setError(null);
-    setProgress(0);
-    setGenerating(false);
-    setShowHistory(false);
-    setCurrentVariantName('');
     stopCamera();
-  }, [stopCamera]);
+  }, [resetGenerationContext, stopCamera]);
 
   const deleteHistory = async (taskId) => {
     try {
@@ -940,7 +996,10 @@ export default function App() {
               </div>
 
               <div className="variant-list">
-                {editingPreset.variants.map((variant) => (
+                {editingPreset.variants.map((variant) => {
+                  const effective = getEffectiveVariantConfig(editingPreset, variant);
+
+                  return (
                   <div key={variant.id} className="variant-card">
                     <div className="variant-row">
                       <label className="field">
@@ -983,6 +1042,34 @@ export default function App() {
                       <span>Consigne additionnelle</span>
                       <textarea rows={3} value={variant.promptAddon} onChange={(e) => updateEditingVariant(variant.id, 'promptAddon', e.target.value)} />
                     </label>
+                    <label className="field">
+                      <span>Prompt complet de la variante</span>
+                      <textarea rows={6} value={variant.promptOverride} onChange={(e) => updateEditingVariant(variant.id, 'promptOverride', e.target.value)} placeholder="Si vide, FLASH utilise le prompt maitre + la consigne additionnelle." />
+                    </label>
+                    <label className="field">
+                      <span>Negative prompt de la variante</span>
+                      <textarea rows={3} value={variant.negativePrompt} onChange={(e) => updateEditingVariant(variant.id, 'negativePrompt', e.target.value)} placeholder="Si vide, FLASH utilise le negative prompt du preset." />
+                    </label>
+                    <div className="effective-box">
+                      <div className="effective-head">
+                        <strong>Payload effectif</strong>
+                        <span>{effective.usesPromptOverride ? 'Prompt verrouille' : 'Prompt herite'}</span>
+                      </div>
+                      <div className="effective-grid">
+                        <div>
+                          <span className="detail-label">Source</span>
+                          <p>{variant.isMaster ? 'Photo source' : (effective.sourceMode === 'source' ? 'Photo source' : 'Master asset')}</p>
+                        </div>
+                        <div>
+                          <span className="detail-label">Sortie</span>
+                          <p>{effective.aspectRatio} · {effective.resolution} · {effective.outputFormat.toUpperCase()}</p>
+                        </div>
+                      </div>
+                      <div className="effective-section">
+                        <span className="detail-label">Prompt reel envoye</span>
+                        <pre>{effective.prompt}</pre>
+                      </div>
+                    </div>
                     <div className="variant-actions">
                       <label className="checkbox-row">
                         <input
@@ -997,7 +1084,7 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                ))}
+                )})}
               </div>
 
               <div className="toolbar">
@@ -1041,8 +1128,10 @@ export default function App() {
               <div className="variant-list">
                 {currentPresetForDisplay.variants.map((variant) => {
                   const checked = selectedVariantIds.includes(variant.id);
+                  const effective = getEffectiveVariantConfig(currentPresetForDisplay, variant);
                   return (
-                    <button key={variant.id} className={`variant-select ${checked ? 'active' : ''}`} onClick={() => toggleVariantSelection(variant.id)}>
+                    <div key={variant.id} className={`variant-select ${checked ? 'active' : ''}`}>
+                    <button className="variant-select-main" onClick={() => toggleVariantSelection(variant.id)}>
                       <div className="variant-check">
                         {checked ? <CheckSquare size={18} /> : <Square size={18} />}
                       </div>
@@ -1056,6 +1145,31 @@ export default function App() {
                       </div>
                       <span className="variant-ratio">{variant.aspectRatio}</span>
                     </button>
+                    <div className="variant-debug">
+                      <div className="variant-debug-grid">
+                        <div>
+                          <span className="detail-label">Source reelle</span>
+                          <p>{variant.isMaster ? 'Photo source' : (effective.sourceMode === 'source' ? 'Photo source' : 'Master asset')}</p>
+                        </div>
+                        <div>
+                          <span className="detail-label">Payload</span>
+                          <p>{effective.aspectRatio} · {effective.resolution} · {effective.outputFormat.toUpperCase()}</p>
+                        </div>
+                        <div>
+                          <span className="detail-label">Prompt</span>
+                          <p>{effective.usesPromptOverride ? 'Prompt complet de variante' : 'Prompt maitre + consigne'}</p>
+                        </div>
+                        <div>
+                          <span className="detail-label">Negative</span>
+                          <p>{effective.usesVariantNegativePrompt ? 'Negative de variante' : 'Negative du preset'}</p>
+                        </div>
+                      </div>
+                      <div className="effective-section">
+                        <span className="detail-label">Prompt reel envoye a KIE</span>
+                        <pre>{effective.prompt}</pre>
+                      </div>
+                    </div>
+                    </div>
                   );
                 })}
               </div>

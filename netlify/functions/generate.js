@@ -6,7 +6,7 @@ export const handler = async (event) => {
   }
 
   try {
-    const { preset, variant, imageBase64, inputImageUrl, customPrompt } = getJsonBody(event);
+    const { preset, variant, imageBase64, inputImageUrl, referenceImageUrls, customPrompt } = getJsonBody(event);
 
     if (!preset?.basePrompt) {
       return json(400, { error: 'Preset invalide' });
@@ -21,11 +21,22 @@ export const handler = async (event) => {
     const imageInput = [];
     let sourceImageUrl = inputImageUrl || null;
 
-    if (sourceImageUrl) {
-      imageInput.push(sourceImageUrl);
-    } else if (imageBase64) {
+    if (imageBase64) {
       sourceImageUrl = await uploadToKieBase64(imageBase64, 'source.jpg');
-      imageInput.push(sourceImageUrl);
+    }
+
+    const pushed = new Set();
+    const pushImage = (url) => {
+      if (typeof url !== 'string' || !url || pushed.has(url)) return;
+      pushed.add(url);
+      imageInput.push(url);
+    };
+
+    pushImage(sourceImageUrl);
+    if (Array.isArray(referenceImageUrls)) {
+      referenceImageUrls.forEach(pushImage);
+    } else {
+      pushImage(inputImageUrl);
     }
 
     const input = {
