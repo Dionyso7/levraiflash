@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:5173)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp"
+    ]
+  }
+}

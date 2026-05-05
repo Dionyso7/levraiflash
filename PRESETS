@@ -1,0 +1,108 @@
+**Fleuriste
+Le plan 01 fixe l'identité : fleurs réelles, lumière naturelle douce, fond neutre. Les suivants poussent vers l'onirisme.
+Workflow : Plan 01 = ancre. Générer ce plan en premier, puis l'utiliser comme image de référence (img2img ou style reference) pour les plans 02 et 03.
+Plan 01
+Bouquet en studio — plan propre
+Ancre — fidèle au réel
+A fresh flower bouquet placed on a clean white surface, soft diffused natural light from the left, neutral white background, flowers in sharp focus with visible petal texture and natural color, no styling props, no hands, no text, product photography, 85mm lens equivalent, f/4 aperture, photorealistic
+Copier
+Plan 02
+Bouquet flottant — lévitation
+Money shot
+The same flower bouquet floating mid-air against a pure white background, warm golden rim light from behind sculpting the outline of the stems and petals, soft inner shadow below the bouquet suggesting weightlessness, flowers in sharp focus, background completely clean, no hands, no support visible, no text, editorial product photography, photorealistic
+Copier
+Plan 03
+Pétales figés en vol
+Effet WOW
+The same flower bouquet surrounded by individual petals suspended mid-air as if just exploded outward, petals frozen in motion at various distances and angles, soft white background with very subtle depth haze, warm diffused studio light, each petal sharp with visible texture, no hands, no text, photorealistic, high-end floral editorial photography
+Copier
+Negative prompt — universel pour cette niche
+hands, fingers, face, person, watermark, text, logo, blur on subject, artificial flowers, plastic, dark background, harsh shadows, Instagram filter look
+
+**Caviste
+Le plan 01 est sobre et documentaire. Les suivants construisent le désir par le mouvement et le contexte.
+Workflow : Plan 01 = ancre. Générer ce plan en premier, puis l'utiliser comme référence de couleur et de forme de bouteille pour les plans 02 et 03.
+Plan 01
+Bouteille en studio — plan propre
+Ancre — fidèle au réel
+A single wine bottle standing upright on a dark slate surface, soft directional studio light from the upper left creating a gentle highlight along the glass, dark charcoal background, bottle in full sharp focus showing glass texture and wine color through the glass, no label text required to be legible, no hands, no glass, no props, product photography, 85mm lens equivalent, photorealistic
+Copier
+Plan 02
+Lévitation — fond sombre sculpté
+Money shot
+The same wine bottle levitating vertically in mid-air against a deep black background, two narrow rim lights on each side sculpting the curve of the glass, wine color visible as a rich translucent layer inside, subtle reflection on an invisible glossy surface below, no hands, no support, no text, luxury editorial product photography, photorealistic
+Copier
+Plan 03
+Versement freeze-frame
+Désir sensoriel
+Dark red wine pouring from a bottle into a large round wine glass, frozen at the exact moment the liquid enters the glass, dynamic wine splash frozen mid-motion with fine droplets suspended in air, warm amber backlighting making the wine appear luminous and translucent, dark background, no hands visible on bottle, no text, high-speed photography aesthetic, photorealistic
+Copier
+Negative prompt — universel pour cette niche
+hands gripping bottle, face, person, watermark, readable label text, blurry liquid, cartoon, illustration, colored gel background, cheap looking, plastic surface
+
+**Chocolatier
+Le plan 01 montre le produit tel qu'il est. Les suivants activent la gourmandise par le mouvement et le détail.
+Workflow : Plan 01 = ancre. Générer ce plan en premier, puis l'utiliser comme référence visuelle pour les couleurs et la forme des chocolats dans les plans 02 et 03.
+Plan 01
+Boîte ouverte — plan propre
+Ancre — fidèle au réel
+An open chocolate box photographed from slightly above, chocolates neatly arranged inside showing varied shapes and glazed surfaces, soft diffused light from above with no harsh shadows, neutral light warm-toned background, chocolates in sharp focus with visible surface texture and sheen, no hands, no text, no props, clean food product photography, 50mm lens equivalent, photorealistic
+Copier
+Plan 02
+Coulée chocolat — freeze parfait
+Désir immédiat
+A thin stream of liquid dark chocolate falling and frozen perfectly mid-flow before hitting a glossy dark surface, the stream shows internal texture and warm brown tones, a small frozen splash at the point of impact below, dramatic warm side lighting creating a highlight along the chocolate stream, deep dark background, no hands, no text, macro food photography, photorealistic
+Copier
+Plan 03
+Cassure suspendue
+Effet WOW
+A single dark chocolate square breaking apart, the two halves frozen mid-separation in the air, fine chocolate crumbs and shards suspended around the break point, clean matte dark background, warm directional light from the side showing the rough interior texture of the broken chocolate, no hands, no text, macro product photography, photorealistic
+Copier
+Negative prompt — universel pour cette niche
+hands, fingers, face, watermark, text, melted mess, burnt chocolate, dirty surface, artificial colors, cartoon, illustration, blurry subject
+
+
+**Épicerie fine
+Le plan 01 montre le produit phare de façon nette et honnête. Les suivants construisent l'abondance et le premium.
+Workflow : Plan 01 = ancre. Générer ce plan en premier, puis l'utiliser comme référence de palette et de matière pour les plans 02 et 03.
+Plan 01
+Produit phare — plan propre
+Ancre — fidèle au réel
+A single artisan product jar placed on a light natural wood surface, soft natural window light from the left, clean white or light beige background, jar in full sharp focus showing label texture and product color through glass, no hands, no additional props, honest product photography, 85mm lens equivalent, photorealistic
+Copier
+Plan 02
+Coulée dorée — freeze backlit
+Money shot
+Golden honey pouring from a jar frozen mid-flow, the honey stream caught at its thickest and most luminous point, warm backlight shining directly through the honey making it glow amber and translucent, light natural surface below catching a small pool of honey, clean light background, no hands, no text, macro food editorial photography, photorealistic
+Copier
+Plan 03
+Overhead — table d'abondance
+Art de vivre
+Flat lay overhead shot of an artisan food selection arranged on a white marble surface, including a jar of the same product from shot 01 alongside complementary items such as aged cheese, bread, dried fruits and nuts, natural linen napkin, warm diffused natural light, composed with generous negative space between items, no hands, no text, no branding visible, lifestyle food editorial photography, photorealistic
+Copier
+Negative prompt — universel pour cette niche
+hands, face, watermark, readable labels, plastic packaging, supermarket products, harsh flash lighting, dark background, cluttered composition, artificial colors
+
+**Parfumeur
+Le plan 01 est pur et documentaire. Les trois suivants construisent un univers sensoriel par couches successives.
+Workflow : Plan 01 = ancre absolue. La forme, la couleur du jus, et le style du flacon doivent être parfaitement établis ici avant tout dérivé.
+Plan 01
+Flacon en studio — plan propre
+Ancre — fidèle au réel
+A single perfume bottle standing upright on a clean reflective white surface, soft diffused studio light from slightly above and to the left, white background, bottle in complete sharp focus showing glass clarity, cap detail, and the color of the fragrance liquid inside, subtle clean reflection on the surface below, no hands, no text, no props, luxury product photography, 85mm lens equivalent, photorealistic
+Copier
+Plan 02
+Lévitation — fond velours sombre
+Prestige
+The same perfume bottle floating vertically mid-air against a deep black velvet background, narrow rim lights on both sides creating a thin luminous edge along the glass silhouette, fragrance liquid color glowing from within the bottle, perfectly clean surface reflection below, no hands, no support structure visible, no text, ultra sharp, luxury editorial product photography, photorealistic
+Copier
+Plan 03
+Mist freeze — brume vaporisée
+Effet unique
+The same perfume bottle with a fine mist of fragrance droplets frozen mid-air around and above it, individual micro-droplets catching a soft backlight and creating a luminous halo effect, dark background, bottle itself in sharp focus, the mist cloud slightly soft and ethereal, no hands, no nozzle visible, no text, luxury fragrance campaign photography, photorealistic
+Copier
+Plan 04
+Ingrédients botaniques — composition
+Storytelling
+The same perfume bottle placed at the center of a composed arrangement of raw botanical ingredients on a dark stone surface, surrounding items include fresh rose petals, dried woody bark pieces, small glass vessel with amber resin, scattered spice seeds, soft warm directional light from above casting gentle shadows, bottle sharp, ingredients slightly softer, no hands, no text, luxury fragrance editorial photography, photorealistic
+
