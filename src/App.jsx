@@ -65,6 +65,8 @@ function createVariant(overrides = {}) {
     id: overrides.id || crypto.randomUUID(),
     name: overrides.name || 'Nouvelle variante',
     promptAddon: overrides.promptAddon || '',
+    promptOverride: overrides.promptOverride || '',
+    negativePrompt: overrides.negativePrompt || '',
     aspectRatio: overrides.aspectRatio || '1:1',
     enabledByDefault: overrides.enabledByDefault ?? true,
     isMaster: overrides.isMaster ?? false,

@@ -13,10 +13,9 @@ export const handler = async (event) => {
     }
 
     const prompt = [
-      preset.basePrompt,
-      variant?.promptAddon,
+      variant?.promptOverride || [preset.basePrompt, variant?.promptAddon].filter(Boolean).join(', '),
       customPrompt,
-      preset?.negativePrompt ? `Avoid: ${preset.negativePrompt}` : null,
+      (variant?.negativePrompt || preset?.negativePrompt) ? `Avoid: ${variant?.negativePrompt || preset?.negativePrompt}` : null,
     ].filter(Boolean).join(', ');
 
     const imageInput = [];
