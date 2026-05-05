@@ -18,7 +18,17 @@ export const handler = async (event) => {
       uploadFileNames,
       customPrompt,
       generationSessionId,
+      uploadOnly,
     } = getJsonBody(event);
+
+    if (uploadOnly) {
+      if (!imageBase64) {
+        return json(400, { error: 'Image source manquante pour upload' });
+      }
+
+      const uploadedUrl = await uploadToKieBase64(imageBase64, uploadFileName || 'source.jpg');
+      return json(200, { sourceImageUrl: uploadedUrl });
+    }
 
     if (!preset?.basePrompt) {
       return json(400, { error: 'Preset invalide' });
@@ -46,28 +56,16 @@ export const handler = async (event) => {
         throw new Error("La vue maitre ne peut pas reutiliser d'images de reference");
       }
 
-      const cleanImageBase64List = Array.isArray(imageBase64List)
-        ? imageBase64List.filter((item) => typeof item === 'string' && item)
-        : [];
       const cleanInputImageUrls = Array.isArray(inputImageUrls)
         ? inputImageUrls.filter((item) => typeof item === 'string' && item)
         : [];
-      const cleanUploadFileNames = Array.isArray(uploadFileNames)
-        ? uploadFileNames.filter((item) => typeof item === 'string' && item)
-        : [];
 
-      if (cleanImageBase64List.length > 0) {
-        const uploadedUrls = await Promise.all(cleanImageBase64List.map((item, index) => (
-          uploadToKieBase64(item, cleanUploadFileNames[index] || `source-${index + 1}.jpg`)
-        )));
-        uploadedUrls.forEach(pushImage);
-        sourceImageUrl = uploadedUrls[0] || null;
+      if (cleanInputImageUrls.length > 0) {
+        cleanInputImageUrls.forEach(pushImage);
+        sourceImageUrl = cleanInputImageUrls[0];
       } else if (imageBase64) {
         sourceImageUrl = await uploadToKieBase64(imageBase64, uploadFileName || 'source.jpg');
         pushImage(sourceImageUrl);
-      } else if (cleanInputImageUrls.length > 0) {
-        cleanInputImageUrls.forEach(pushImage);
-        sourceImageUrl = cleanInputImageUrls[0];
       } else if (inputImageUrl) {
         sourceImageUrl = inputImageUrl;
         pushImage(sourceImageUrl);

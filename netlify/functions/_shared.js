@@ -229,6 +229,40 @@ export const DEFAULT_PRESET_TEMPLATES = [
       },
     ],
   },
+  {
+    key: 'universel-editorial',
+    name: 'Universel editorial',
+    description: "Famille universelle pour produits du quotidien, avec un plan lifestyle contextuel et un plan explosion en apesanteur.",
+    theme: 'custom',
+    basePrompt: 'The exact same product as in the reference image, with identical shape, identical design, identical colors, identical text and markings fully preserved - do not alter or hallucinate any part of the product. The product placed in a styled flat lay composition on a surface that matches the natural world of this product. Identify what this product is, who uses it, and in what context - then choose surrounding props, materials, textures and atmosphere that are authentically coherent with that world. Props should feel like they naturally coexist with this product in real life. Soft directional natural light, clean composition with breathing space between elements, no hands, no text added, no branding on props, lifestyle editorial photography, photorealistic',
+    negativePrompt: 'hands, fingers, face, person, watermark, text added, branding on props, different product, altered shape, altered design, wrong colors, altered label, invented text, hallucinated markings, support structure, cluttered composition',
+    aspectRatio: '4:5',
+    resolution: '1K',
+    outputFormat: 'png',
+    variants: [
+      {
+        key: 'plan-01',
+        name: 'Flat lay contextuel',
+        promptAddon: 'Plan maitre universel.',
+        promptOverride: 'The exact same product as in the reference image, with identical shape, identical design, identical colors, identical text and markings fully preserved - do not alter or hallucinate any part of the product. The product placed in a styled flat lay composition on a surface that matches the natural world of this product. Identify what this product is, who uses it, and in what context - then choose surrounding props, materials, textures and atmosphere that are authentically coherent with that world. Props should feel like they naturally coexist with this product in real life. Soft directional natural light, clean composition with breathing space between elements, no hands, no text added, no branding on props, lifestyle editorial photography, photorealistic',
+        negativePrompt: 'hands, fingers, face, person, watermark, text added, branding on props, different product, altered shape, altered design, wrong colors, altered label, invented text, hallucinated markings, support structure, cluttered composition',
+        aspectRatio: '4:5',
+        enabledByDefault: true,
+        isMaster: true,
+        sourceMode: 'source',
+      },
+      {
+        key: 'plan-02',
+        name: 'Explosion apesanteur',
+        promptAddon: 'Plan campagne dramatique.',
+        promptOverride: 'The exact same product as in the reference image, with identical shape, identical design, identical colors, identical text and markings fully preserved - do not alter or hallucinate any part of the product. The product suspended mid-air as if weightless, slightly tilted, label facing camera. Identify what this product contains or is made of - then generate floating elements around it that are physically coherent with its contents or function: liquid droplets, ingredients, particles, sparks, smoke or material fragments matching the product\'s nature. Elements frozen mid-air in all directions around the product, dark background, dramatic rim lighting, no hands, no surface contact, photorealistic, editorial campaign photography',
+        negativePrompt: 'hands, fingers, face, person, watermark, text added, branding on props, different product, altered shape, altered design, wrong colors, altered label, invented text, hallucinated markings, surface contact, visible support structure, bright background',
+        aspectRatio: '4:5',
+        enabledByDefault: true,
+        sourceMode: 'master',
+      },
+    ],
+  },
 ];
 
 export function json(statusCode, body) {

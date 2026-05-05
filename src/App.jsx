@@ -464,13 +464,26 @@ export default function App() {
 
     try {
       const sessionId = crypto.randomUUID();
-      const sourcePayloads = await Promise.all(sourceImages.map(async (image, index) => {
+      const sourceUploads = await Promise.all(sourceImages.map(async (image, index) => {
         const imageBase64 = await toBase64(image.file);
         const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
-        return {
-          imageBase64,
-          uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
-        };
+        const uploadRes = await fetch(`${API}/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            generationSessionId: sessionId,
+            uploadOnly: true,
+            imageBase64,
+            uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
+          }),
+        });
+        const uploadData = await uploadRes.json();
+
+        if (!uploadRes.ok || uploadData.error || !uploadData.sourceImageUrl) {
+          throw new Error(uploadData.error || `Erreur d'upload sur la reference ${index + 1}`);
+        }
+
+        return uploadData.sourceImageUrl;
       }));
       const nextAssets = [];
       const secondaryVariants = variants.filter((variant) => variant.id !== masterVariant.id);
@@ -484,8 +497,7 @@ export default function App() {
           generationSessionId: sessionId,
           preset: selectedPreset,
           variant: { ...masterVariant, sourceMode: 'source' },
-          imageBase64List: sourcePayloads.map((item) => item.imageBase64),
-          uploadFileNames: sourcePayloads.map((item) => item.uploadFileName),
+          inputImageUrls: sourceUploads,
         }),
       });
 
