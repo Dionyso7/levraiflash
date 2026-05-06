@@ -7,9 +7,9 @@
   node_bundler = "esbuild"
 
 [dev]
-  command = "npm run dev:vite"
-  port = 8889
-  targetPort = 5173
+  command = "npm run dev:vite -- --port 5175"
+  port = 8891
+  targetPort = 5175
 
 [[redirects]]
   from = "/api/*"

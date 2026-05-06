@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+﻿import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Camera,
   X,
@@ -28,6 +28,8 @@ import './App.css';
 
 const API = '/api';
 const CLIENT_ID_KEY = 'flash_client_id';
+const MAX_BATCH_ITEMS = 10;
+const MAX_BATCH_CONCURRENCY = 10;
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -192,15 +194,184 @@ function formatDate(iso) {
   });
 }
 
+function sanitizeFileName(value, fallback = 'asset') {
+  const normalized = String(value || fallback)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return normalized || fallback;
+}
+
+function getAssetExtension(url, fallback = 'png') {
+  try {
+    const pathname = new URL(url).pathname;
+    const ext = pathname.split('.').pop()?.toLowerCase();
+    if (ext && /^[a-z0-9]+$/.test(ext)) {
+      return ext;
+    }
+  } catch {
+    return fallback;
+  }
+
+  return fallback;
+}
+
+function batchStatusLabel(status) {
+  switch (status) {
+    case 'draft':
+      return 'Pret';
+    case 'uploading':
+      return 'Upload refs';
+    case 'generating-master':
+      return 'Master';
+    case 'generating-variants':
+      return 'Variantes';
+    case 'done':
+      return 'Termine';
+    case 'failed':
+      return 'Erreur';
+    default:
+      return 'Pret';
+  }
+}
+
+function createBatchItem(file, previewUrl, preset, preferredVariantIds = []) {
+  const validVariantIds = preset
+    ? preferredVariantIds.filter((id) => preset.variants.some((variant) => variant.id === id))
+    : [];
+
+  return {
+    id: crypto.randomUUID(),
+    name: file?.name || `Produit-${Date.now()}`,
+    sourceImages: [createSourceImage(file, previewUrl)],
+    presetId: preset?.id || null,
+    selectedVariantIds: validVariantIds.length ? validVariantIds : defaultSelectedVariantIds(preset),
+    status: 'draft',
+    progress: 0,
+    currentVariantName: '',
+    results: [],
+    error: null,
+  };
+}
+
+function isBatchItemConfigComplete(item) {
+  return item.sourceImages.length > 0 && Boolean(item.presetId) && item.selectedVariantIds.length > 0;
+}
+
+function isBatchItemLocked(status) {
+  return ['uploading', 'generating-master', 'generating-variants'].includes(status);
+}
+
+function isLikelyMobileDevice() {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function getFileNameFromDisposition(disposition, fallback) {
+  const match = disposition?.match(/filename="?([^"]+)"?/i);
+  return match?.[1] || fallback;
+}
+
+async function saveBlob(blob, fileName) {
+  if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+    try {
+      const file = new File([blob], fileName, { type: blob.type || 'application/octet-stream' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: fileName });
+        return;
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return;
+      }
+    }
+  }
+
+  downloadBlob(blob, fileName);
+}
+
+function submitBundleDownloadForm({ items, archiveName }) {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `${API}/download-bundle`;
+  form.style.display = 'none';
+
+  const itemsInput = document.createElement('input');
+  itemsInput.type = 'hidden';
+  itemsInput.name = 'items';
+  itemsInput.value = JSON.stringify(items);
+
+  const archiveInput = document.createElement('input');
+  archiveInput.type = 'hidden';
+  archiveInput.name = 'archiveName';
+  archiveInput.value = archiveName;
+
+  form.appendChild(itemsInput);
+  form.appendChild(archiveInput);
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+}
+
+async function shareFiles(files, title = 'FLASH') {
+  if (
+    typeof navigator === 'undefined'
+    || typeof navigator.share !== 'function'
+    || typeof navigator.canShare !== 'function'
+    || !navigator.canShare({ files })
+  ) {
+    return false;
+  }
+
+  try {
+    await navigator.share({ files, title });
+    return true;
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      return true;
+    }
+
+    return false;
+  }
+}
+
 export default function App() {
   const [step, setStep] = useState('capture');
   const [sourceImages, setSourceImages] = useState([]);
+  const [batchItems, setBatchItems] = useState([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchDownloading, setBatchDownloading] = useState(false);
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedVariantIds, setSelectedVariantIds] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [results, setResults] = useState([]);
+  const [resultsMeta, setResultsMeta] = useState({
+    archiveName: 'flash-resultats.zip',
+    folderName: 'resultats',
+    outputFormat: 'png',
+  });
+  const [resultsDownloading, setResultsDownloading] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
   const [cameraActive, setCameraActive] = useState(false);
@@ -212,9 +383,16 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const fileRef = useRef(null);
+  const batchFileRef = useRef(null);
+  const batchSourceFileRef = useRef(null);
   const clientIdRef = useRef(getClientId());
   const activeGenerationRef = useRef(0);
+  const activeBatchRunRef = useRef(0);
+  const activeBatchJobsRef = useRef(new Set());
+  const ignoredBatchItemsRef = useRef(new Set());
+  const batchHistoryLoadedRunRef = useRef(null);
   const sourcePreviewUrlsRef = useRef(new Set());
+  const batchSourceTargetItemRef = useRef(null);
 
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
@@ -223,6 +401,42 @@ export default function App() {
   const presetNameMap = useMemo(
     () => Object.fromEntries(presets.map((preset) => [preset.id, preset.name])),
     [presets],
+  );
+  const batchSummary = useMemo(() => {
+    const summary = {
+      total: batchItems.length,
+      pending: 0,
+      running: 0,
+      done: 0,
+      failed: 0,
+      assets: 0,
+    };
+
+    batchItems.forEach((item) => {
+      summary.assets += item.results.length;
+      if (item.status === 'done') summary.done += 1;
+      else if (item.status === 'failed') summary.failed += 1;
+      else if (['draft', 'pending'].includes(item.status)) summary.pending += 1;
+      else summary.running += 1;
+    });
+
+    return summary;
+  }, [batchItems]);
+  const canDownloadBatch = useMemo(() => {
+    if (batchRunning || batchDownloading || batchItems.length === 0) return false;
+    return batchItems.some((item) => item.results.length > 0);
+  }, [batchDownloading, batchItems, batchRunning]);
+  const launchableBatchCount = useMemo(
+    () => batchItems.filter((item) => isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status)).length,
+    [batchItems],
+  );
+  const prefersDirectMobileSave = useMemo(
+    () => isLikelyMobileDevice(),
+    [],
+  );
+  const canDownloadResults = useMemo(
+    () => results.length > 0 && !resultsDownloading,
+    [results, resultsDownloading],
   );
 
   const loadHistory = useCallback(async () => {
@@ -243,6 +457,11 @@ export default function App() {
   const resetGenerationContext = useCallback(() => {
     activeGenerationRef.current += 1;
     setResults([]);
+    setResultsMeta({
+      archiveName: 'flash-resultats.zip',
+      folderName: 'resultats',
+      outputFormat: 'png',
+    });
     setError(null);
     setProgress(0);
     setGenerating(false);
@@ -264,10 +483,16 @@ export default function App() {
   }, []);
 
   const clearSourceImages = useCallback(() => {
-    sourcePreviewUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl));
-    sourcePreviewUrlsRef.current.clear();
+    sourceImages.forEach((image) => releasePreviewUrl(image.previewUrl));
     setSourceImages([]);
-  }, []);
+  }, [releasePreviewUrl, sourceImages]);
+
+  const clearBatchItems = useCallback(() => {
+    setBatchItems((current) => {
+      current.forEach((item) => item.sourceImages.forEach((image) => releasePreviewUrl(image.previewUrl)));
+      return [];
+    });
+  }, [releasePreviewUrl]);
 
   const addSourceImages = useCallback((items) => {
     const nextItems = Array.isArray(items) ? items.filter((item) => item?.file && item?.previewUrl) : [];
@@ -330,6 +555,20 @@ export default function App() {
     });
   }, [selectedPreset, editingPreset]);
 
+  useEffect(() => {
+    if (presets.length === 0) return;
+
+    setBatchItems((current) => current.map((item) => {
+      const preset = presets.find((entry) => entry.id === item.presetId) || presets[0];
+      const selectedIds = item.selectedVariantIds.filter((id) => preset.variants.some((variant) => variant.id === id));
+      return {
+        ...item,
+        presetId: preset?.id || null,
+        selectedVariantIds: selectedIds.length ? selectedIds : defaultSelectedVariantIds(preset),
+      };
+    }));
+  }, [presets]);
+
   useEffect(() => () => {
     sourcePreviewUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl));
     sourcePreviewUrlsRef.current.clear();
@@ -344,7 +583,7 @@ export default function App() {
       if (videoRef.current) videoRef.current.srcObject = stream;
       setCameraActive(true);
     } catch {
-      setError("Impossible d'accéder à la caméra");
+      setError("Impossible d'acceder a la camera");
     }
   }, []);
 
@@ -376,6 +615,101 @@ export default function App() {
     e.target.value = '';
   }, [addSourceImages]);
 
+  const addBatchFiles = useCallback((files) => {
+    const nextFiles = Array.from(files || []);
+    if (nextFiles.length === 0) return;
+
+    const availableSlots = MAX_BATCH_ITEMS - batchItems.length;
+    if (availableSlots <= 0) {
+      setError(`Le mode batch est limite a ${MAX_BATCH_ITEMS} produits.`);
+      return;
+    }
+
+    const presetForNewItems = selectedPreset || presets[0] || null;
+    const acceptedFiles = nextFiles.slice(0, availableSlots);
+    const nextItems = acceptedFiles.map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      rememberPreviewUrl(previewUrl);
+      return createBatchItem(file, previewUrl, presetForNewItems, selectedVariantIds);
+    });
+
+    setBatchItems((current) => [...current, ...nextItems]);
+    setStep('batch');
+    setShowHistory(false);
+
+    if (nextFiles.length > acceptedFiles.length) {
+      setError(`Seulement ${MAX_BATCH_ITEMS} produits peuvent etre prepares dans le batch.`);
+    }
+  }, [batchItems.length, presets, rememberPreviewUrl, selectedPreset, selectedVariantIds]);
+
+  const handleBatchFileUpload = useCallback((e) => {
+    addBatchFiles(e.target.files || []);
+    e.target.value = '';
+  }, [addBatchFiles]);
+
+  const openBatchSourcePicker = useCallback((itemId) => {
+    batchSourceTargetItemRef.current = itemId;
+    batchSourceFileRef.current?.click();
+  }, []);
+
+  const handleBatchSourceUpload = useCallback((e) => {
+    const targetItemId = batchSourceTargetItemRef.current;
+    const files = Array.from(e.target.files || []);
+    batchSourceTargetItemRef.current = null;
+    e.target.value = '';
+
+    if (!targetItemId || files.length === 0) {
+      return;
+    }
+
+    const nextImages = files.map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      rememberPreviewUrl(previewUrl);
+      return createSourceImage(file, previewUrl);
+    });
+
+    setBatchItems((current) => current.map((item) => {
+      if (item.id !== targetItemId || isBatchItemLocked(item.status)) {
+        return item;
+      }
+
+      return {
+        ...item,
+        sourceImages: [...item.sourceImages, ...nextImages],
+        status: 'draft',
+        progress: 0,
+        currentVariantName: '',
+        results: [],
+        error: null,
+      };
+    }));
+  }, [rememberPreviewUrl]);
+
+  const removeBatchSourceImage = useCallback((itemId, imageId) => {
+    setBatchItems((current) => current.map((item) => {
+      if (item.id !== itemId || isBatchItemLocked(item.status)) {
+        return item;
+      }
+
+      const nextSourceImages = item.sourceImages.filter((image) => image.id !== imageId);
+      const removedImage = item.sourceImages.find((image) => image.id === imageId);
+      if (removedImage) {
+        releasePreviewUrl(removedImage.previewUrl);
+      }
+
+      return {
+        ...item,
+        name: item.name === removedImage?.name && nextSourceImages[0]?.name ? nextSourceImages[0].name : item.name,
+        sourceImages: nextSourceImages,
+        status: 'draft',
+        progress: 0,
+        currentVariantName: '',
+        results: [],
+        error: null,
+      };
+    }));
+  }, [releasePreviewUrl]);
+
   const persistHistoryEntry = useCallback(async (entry) => {
     const res = await fetch(`${API}/history`, {
       method: 'POST',
@@ -394,17 +728,17 @@ export default function App() {
     return data;
   }, []);
 
-  const pollTask = useCallback((taskId, { onProgress, runId } = {}) => new Promise((resolve, reject) => {
+  const pollTask = useCallback((taskId, { onProgress, shouldAbort } = {}) => new Promise((resolve, reject) => {
     let attempts = 0;
 
     const poll = async () => {
-      if (runId && activeGenerationRef.current !== runId) {
-        reject(new Error('Generation ignoree car les references source ont change'));
+      if (shouldAbort?.()) {
+        reject(new Error('Generation ignoree car la session a change'));
         return;
       }
 
       if (attempts >= 120) {
-        reject(new Error('Timeout — génération trop longue'));
+        reject(new Error('Timeout - generation trop longue'));
         return;
       }
 
@@ -413,7 +747,7 @@ export default function App() {
         const data = await res.json();
 
         if (!res.ok) {
-          throw new Error(data.error || 'Erreur de génération');
+          throw new Error(data.error || 'Erreur de generation');
         }
 
         if (data.status === 'done') {
@@ -423,7 +757,7 @@ export default function App() {
         }
 
         if (data.status === 'failed') {
-          reject(new Error('Échec de la génération. Réessaye.'));
+          reject(new Error('Echec de la generation. Reessaye.'));
           return;
         }
 
@@ -444,166 +778,301 @@ export default function App() {
     poll();
   }), []);
 
-  const generate = useCallback(async () => {
-    if (sourceImages.length === 0 || !selectedPreset || selectedVariantIds.length === 0) return;
+  const requestBundleDownload = useCallback(async ({ items, archiveName }) => {
+    try {
+      const res = await fetch(`${API}/download-bundle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, archiveName }),
+      });
 
-    const variants = selectedPreset.variants.filter((variant) => selectedVariantIds.includes(variant.id));
-    const masterVariant = getMasterVariant(selectedPreset, selectedVariantIds);
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Impossible de preparer le telechargement');
+      }
 
-    if (variants.length === 0 || !masterVariant) {
-      setError('Choisis au moins une variante à générer');
+      const blob = await res.blob();
+      const fileName = getFileNameFromDisposition(res.headers.get('Content-Disposition'), archiveName);
+      await saveBlob(blob, fileName);
+    } catch (err) {
+      if (err instanceof TypeError) {
+        submitBundleDownloadForm({ items, archiveName });
+        return;
+      }
+
+      throw err;
+    }
+  }, []);
+
+  const fetchAssetFile = useCallback(async ({ url, fileName }) => {
+    const params = new URLSearchParams({
+      url,
+      fileName,
+    });
+    const res = await fetch(`${API}/download-asset?${params.toString()}`);
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || `Impossible de recuperer ${fileName}`);
+    }
+
+    const blob = await res.blob();
+    return new File([blob], fileName, { type: blob.type || 'application/octet-stream' });
+  }, []);
+
+  const buildBundleItems = useCallback((collections) => collections
+    .filter((collection) => Array.isArray(collection?.assets) && collection.assets.length > 0)
+    .map((collection, collectionIndex) => ({
+      folderName: sanitizeFileName(collection.folderName, `resultats-${collectionIndex + 1}`),
+      files: collection.assets.map((asset, assetIndex) => ({
+        url: asset.url,
+        fileName: `${String(assetIndex + 1).padStart(2, '0')}-${sanitizeFileName(asset.label || `resultat-${assetIndex + 1}`)}.${collection.outputFormat || getAssetExtension(asset.url, 'png')}`,
+      })),
+    })), []);
+
+  const saveCollections = useCallback(async ({ collections, archiveName, title }) => {
+    const items = buildBundleItems(collections);
+    if (items.length === 0) {
+      throw new Error('Aucun asset a enregistrer');
+    }
+
+    if (prefersDirectMobileSave) {
+      const files = await Promise.all(items.flatMap((item) => item.files.map((file) => fetchAssetFile({
+        url: file.url,
+        fileName: items.length > 1 ? `${item.folderName}-${file.fileName}` : file.fileName,
+      }))));
+
+      const shared = await shareFiles(files, title || 'FLASH');
+      if (shared) {
+        return;
+      }
+
+      for (const file of files) {
+        await saveBlob(file, file.name);
+      }
       return;
     }
+
+    await requestBundleDownload({ items, archiveName });
+  }, [buildBundleItems, fetchAssetFile, prefersDirectMobileSave, requestBundleDownload]);
+
+  const downloadSingleResult = useCallback(async (asset, fileName) => {
+    try {
+      setError(null);
+      const file = await fetchAssetFile({
+        url: asset.url,
+        fileName,
+      });
+      await saveBlob(file, file.name);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [fetchAssetFile]);
+
+  const runGenerationJob = useCallback(async ({
+    sourceImages: jobSourceImages,
+    preset,
+    selectedVariantIds: jobSelectedVariantIds,
+    shouldAbort,
+    onStageChange,
+    onProgress,
+  }) => {
+    if (jobSourceImages.length === 0 || !preset || jobSelectedVariantIds.length === 0) {
+      throw new Error('Configuration de generation incomplete');
+    }
+
+    const variants = preset.variants.filter((variant) => jobSelectedVariantIds.includes(variant.id));
+    const masterVariant = getMasterVariant(preset, jobSelectedVariantIds);
+
+    if (variants.length === 0 || !masterVariant) {
+      throw new Error('Choisis au moins une variante a generer');
+    }
+
+    const sessionId = crypto.randomUUID();
+    const sourceUploads = await Promise.all(jobSourceImages.map(async (image, index) => {
+      const imageBase64 = await toBase64(image.file);
+      const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+      const uploadRes = await fetch(`${API}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          generationSessionId: sessionId,
+          uploadOnly: true,
+          imageBase64,
+          uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
+        }),
+      });
+      const uploadData = await uploadRes.json();
+
+      if (!uploadRes.ok || uploadData.error || !uploadData.sourceImageUrl) {
+        throw new Error(uploadData.error || `Erreur d'upload sur la reference ${index + 1}`);
+      }
+
+      return uploadData.sourceImageUrl;
+    }));
+
+    if (shouldAbort?.()) {
+      throw new Error('Generation ignoree car la session a change');
+    }
+
+    const nextAssets = [];
+    const secondaryVariants = variants.filter((variant) => variant.id !== masterVariant.id);
+
+    onStageChange?.({ status: 'generating-master', currentVariantName: `Master - ${masterVariant.name}` });
+
+    const masterRes = await fetch(`${API}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        generationSessionId: sessionId,
+        preset,
+        variant: { ...masterVariant, sourceMode: 'source' },
+        inputImageUrls: sourceUploads,
+      }),
+    });
+
+    const masterData = await masterRes.json();
+    if (!masterRes.ok || masterData.error) {
+      throw new Error(masterData.error || 'Erreur de generation du master');
+    }
+
+    const masterUrls = await pollTask(masterData.taskId, {
+      shouldAbort,
+      onProgress: (ratio) => {
+        onProgress?.(Math.max(5, Math.round(5 + ratio * (secondaryVariants.length ? 30 : 95))));
+      },
+    });
+
+    masterUrls.forEach((url, imageIndex) => {
+      nextAssets.push({
+        id: `${masterVariant.id}-${imageIndex}`,
+        url,
+        label: masterUrls.length > 1 ? `${masterVariant.name} ${imageIndex + 1}` : masterVariant.name,
+        variantId: masterVariant.id,
+      });
+    });
+
+    const masterImageUrl = masterUrls[0];
+
+    if (!masterImageUrl) {
+      throw new Error("Le master asset n'a renvoye aucune image");
+    }
+
+    if (secondaryVariants.length > 0) {
+      onStageChange?.({ status: 'generating-variants', currentVariantName: 'Variantes en parallele' });
+      const progressMap = Object.fromEntries(secondaryVariants.map((variant) => [variant.id, 0]));
+      const updateParallelProgress = () => {
+        const average = Object.values(progressMap).reduce((sum, value) => sum + value, 0) / secondaryVariants.length;
+        onProgress?.(Math.max(35, Math.round(35 + average * 65)));
+      };
+
+      const secondaryResults = await Promise.allSettled(
+        secondaryVariants.map(async (variant) => {
+          const res = await fetch(`${API}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              generationSessionId: sessionId,
+              preset,
+              variant: { ...variant, sourceMode: 'master' },
+              referenceImageUrls: [masterImageUrl],
+            }),
+          });
+          const data = await res.json();
+
+          if (!res.ok || data.error) {
+            throw new Error(data.error || `Erreur sur ${variant.name}`);
+          }
+
+          const urls = await pollTask(data.taskId, {
+            shouldAbort,
+            onProgress: (ratio) => {
+              progressMap[variant.id] = ratio;
+              updateParallelProgress();
+            },
+          });
+
+          return { variant, urls };
+        }),
+      );
+
+      const failed = [];
+      secondaryResults.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          result.value.urls.forEach((url, imageIndex) => {
+            nextAssets.push({
+              id: `${result.value.variant.id}-${imageIndex}`,
+              url,
+              label: result.value.urls.length > 1 ? `${result.value.variant.name} ${imageIndex + 1}` : result.value.variant.name,
+              variantId: result.value.variant.id,
+            });
+          });
+          return;
+        }
+
+        failed.push(result.reason?.message || 'variante inconnue');
+      });
+
+      if (failed.length === secondaryVariants.length) {
+        throw new Error(failed[0] || 'Toutes les variantes secondaires ont echoue');
+      }
+
+      if (failed.length > 0) {
+        onStageChange?.({
+          status: 'generating-variants',
+          currentVariantName: `Variantes partielles - ${failed.length} echec(s)`,
+        });
+      }
+    }
+
+    const entry = {
+      taskId: sessionId,
+      presetId: preset.id,
+      presetName: preset.name,
+      images: nextAssets,
+    };
+
+    await persistHistoryEntry(entry);
+
+    return {
+      sessionId,
+      assets: nextAssets,
+    };
+  }, [persistHistoryEntry, pollTask]);
+
+  const generate = useCallback(async () => {
+    if (sourceImages.length === 0 || !selectedPreset || selectedVariantIds.length === 0) return;
 
     const runId = activeGenerationRef.current + 1;
     activeGenerationRef.current = runId;
     setGenerating(true);
     setError(null);
+    setResults([]);
     setProgress(5);
     setCurrentVariantName('');
 
     try {
-      const sessionId = crypto.randomUUID();
-      const sourceUploads = await Promise.all(sourceImages.map(async (image, index) => {
-        const imageBase64 = await toBase64(image.file);
-        const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
-        const uploadRes = await fetch(`${API}/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            generationSessionId: sessionId,
-            uploadOnly: true,
-            imageBase64,
-            uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
-          }),
-        });
-        const uploadData = await uploadRes.json();
-
-        if (!uploadRes.ok || uploadData.error || !uploadData.sourceImageUrl) {
-          throw new Error(uploadData.error || `Erreur d'upload sur la reference ${index + 1}`);
-        }
-
-        return uploadData.sourceImageUrl;
-      }));
-      const nextAssets = [];
-      const secondaryVariants = variants.filter((variant) => variant.id !== masterVariant.id);
-
-      setCurrentVariantName(`Master · ${masterVariant.name}`);
-
-      const masterRes = await fetch(`${API}/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          generationSessionId: sessionId,
-          preset: selectedPreset,
-          variant: { ...masterVariant, sourceMode: 'source' },
-          inputImageUrls: sourceUploads,
-        }),
-      });
-
-      const masterData = await masterRes.json();
-      if (!masterRes.ok || masterData.error) {
-        throw new Error(masterData.error || 'Erreur de génération du master');
-      }
-
-      const masterUrls = await pollTask(masterData.taskId, {
-        runId,
-        onProgress: (ratio) => {
-          setProgress(Math.max(5, Math.round(5 + ratio * (secondaryVariants.length ? 30 : 95))));
+      const { assets } = await runGenerationJob({
+        sourceImages,
+        preset: selectedPreset,
+        selectedVariantIds,
+        shouldAbort: () => activeGenerationRef.current !== runId,
+        onStageChange: ({ currentVariantName: nextVariantName }) => {
+          setCurrentVariantName(nextVariantName || '');
         },
+        onProgress: setProgress,
       });
 
-      masterUrls.forEach((url, imageIndex) => {
-        nextAssets.push({
-          id: `${masterVariant.id}-${imageIndex}`,
-          url,
-          label: masterUrls.length > 1 ? `${masterVariant.name} ${imageIndex + 1}` : masterVariant.name,
-          variantId: masterVariant.id,
-        });
-      });
-
-      const masterImageUrl = masterUrls[0];
-
-      if (!masterImageUrl) {
-        throw new Error("Le master asset n'a renvoyé aucune image");
-      }
-
-      if (secondaryVariants.length > 0) {
-        setCurrentVariantName('Variantes en parallèle');
-        const progressMap = Object.fromEntries(secondaryVariants.map((variant) => [variant.id, 0]));
-        const updateParallelProgress = () => {
-          const average = Object.values(progressMap).reduce((sum, value) => sum + value, 0) / secondaryVariants.length;
-          setProgress(Math.max(35, Math.round(35 + average * 65)));
-        };
-
-        const secondaryResults = await Promise.allSettled(
-          secondaryVariants.map(async (variant) => {
-            const res = await fetch(`${API}/generate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                generationSessionId: sessionId,
-                preset: selectedPreset,
-                variant: { ...variant, sourceMode: 'master' },
-                referenceImageUrls: [masterImageUrl],
-              }),
-            });
-            const data = await res.json();
-
-            if (!res.ok || data.error) {
-              throw new Error(data.error || `Erreur sur ${variant.name}`);
-            }
-
-            const urls = await pollTask(data.taskId, {
-              runId,
-              onProgress: (ratio) => {
-                progressMap[variant.id] = ratio;
-                updateParallelProgress();
-              },
-            });
-
-            return { variant, urls };
-          }),
-        );
-
-        const failed = [];
-        secondaryResults.forEach((result) => {
-          if (result.status === 'fulfilled') {
-            result.value.urls.forEach((url, imageIndex) => {
-              nextAssets.push({
-                id: `${result.value.variant.id}-${imageIndex}`,
-                url,
-                label: result.value.urls.length > 1 ? `${result.value.variant.name} ${imageIndex + 1}` : result.value.variant.name,
-                variantId: result.value.variant.id,
-              });
-            });
-            return;
-          }
-
-          failed.push(result.reason?.message || 'variante inconnue');
-        });
-
-        if (failed.length === secondaryVariants.length) {
-          throw new Error(failed[0] || 'Toutes les variantes secondaires ont échoué');
-        }
-
-        if (failed.length > 0) {
-          setError(`Certaines variantes ont échoué : ${failed.join(', ')}`);
-        }
-      }
-
-      const entry = {
-        taskId: sessionId,
-        presetId: selectedPreset.id,
-        presetName: selectedPreset.name,
-        images: nextAssets,
-      };
-
-      await persistHistoryEntry(entry);
       if (activeGenerationRef.current !== runId) {
         return;
       }
-      setResults(nextAssets);
+
+      setResults(assets);
+      setResultsMeta({
+        archiveName: `flash-${sanitizeFileName(selectedPreset.name, 'preset')}-${new Date().toISOString().slice(0, 10)}.zip`,
+        folderName: sanitizeFileName(selectedPreset.name, 'resultats'),
+        outputFormat: selectedPreset.outputFormat || 'png',
+      });
       setStep('results');
       setProgress(100);
       await loadHistory();
@@ -617,7 +1086,222 @@ export default function App() {
         setCurrentVariantName('');
       }
     }
-  }, [sourceImages, selectedPreset, selectedVariantIds, persistHistoryEntry, pollTask, loadHistory]);
+  }, [loadHistory, runGenerationJob, selectedPreset, selectedVariantIds, sourceImages]);
+
+  const updateBatchItemState = useCallback((itemId, patch) => {
+    setBatchItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
+  }, []);
+
+  const removeBatchItem = useCallback((itemId) => {
+    ignoredBatchItemsRef.current.add(itemId);
+    activeBatchJobsRef.current.delete(itemId);
+    setBatchItems((current) => current.filter((item) => {
+      if (item.id !== itemId) return true;
+      item.sourceImages.forEach((image) => releasePreviewUrl(image.previewUrl));
+      return false;
+    }));
+  }, [releasePreviewUrl]);
+
+  const updateBatchItemPreset = useCallback((itemId, presetId) => {
+    const preset = presets.find((entry) => entry.id === presetId) || null;
+    updateBatchItemState(itemId, {
+      presetId,
+      selectedVariantIds: defaultSelectedVariantIds(preset),
+      error: null,
+      results: [],
+      progress: 0,
+      status: 'draft',
+      currentVariantName: '',
+    });
+  }, [presets, updateBatchItemState]);
+
+  const executeBatchItem = useCallback(async (item, runId) => {
+    const preset = presets.find((entry) => entry.id === item.presetId);
+
+    if (!item || !preset || !isBatchItemConfigComplete(item)) {
+      return;
+    }
+
+    activeBatchJobsRef.current.add(item.id);
+
+    try {
+      updateBatchItemState(item.id, {
+        status: 'uploading',
+        progress: 2,
+        error: null,
+        currentVariantName: 'Preparation des references',
+      });
+
+      const { assets } = await runGenerationJob({
+        sourceImages: item.sourceImages,
+        preset,
+        selectedVariantIds: item.selectedVariantIds,
+        shouldAbort: () => (
+          activeBatchRunRef.current !== runId
+          || ignoredBatchItemsRef.current.has(item.id)
+        ),
+        onStageChange: ({ status, currentVariantName: nextVariantName }) => {
+          if (ignoredBatchItemsRef.current.has(item.id)) return;
+          updateBatchItemState(item.id, {
+            status: status || 'pending',
+            currentVariantName: nextVariantName || '',
+          });
+        },
+        onProgress: (nextProgress) => {
+          if (ignoredBatchItemsRef.current.has(item.id)) return;
+          updateBatchItemState(item.id, { progress: nextProgress });
+        },
+      });
+
+      if (activeBatchRunRef.current !== runId || ignoredBatchItemsRef.current.has(item.id)) {
+        return;
+      }
+
+      updateBatchItemState(item.id, {
+        status: 'done',
+        progress: 100,
+        currentVariantName: 'Generation terminee',
+        results: assets,
+        error: null,
+      });
+    } catch (err) {
+      if (activeBatchRunRef.current !== runId || ignoredBatchItemsRef.current.has(item.id)) {
+        return;
+      }
+
+      updateBatchItemState(item.id, {
+        status: 'failed',
+        progress: 0,
+        currentVariantName: '',
+        results: [],
+        error: err.message,
+      });
+    } finally {
+      activeBatchJobsRef.current.delete(item.id);
+      ignoredBatchItemsRef.current.delete(item.id);
+    }
+  }, [presets, runGenerationJob, updateBatchItemState]);
+
+  const startBatchGeneration = useCallback(async () => {
+    if (batchItems.length === 0) {
+      setError('Ajoute au moins un produit au batch.');
+      return;
+    }
+
+    const runnableItems = batchItems.filter((item) => isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status));
+    if (runnableItems.length === 0) {
+      setError('Chaque produit batch doit avoir un preset et au moins une variante active.');
+      return;
+    }
+
+    if (!batchRunning) {
+      activeBatchRunRef.current += 1;
+      batchHistoryLoadedRunRef.current = null;
+      ignoredBatchItemsRef.current.clear();
+    }
+
+    setBatchRunning(true);
+    setError(null);
+    setShowHistory(false);
+
+    setBatchItems((current) => current.map((item) => ({
+      ...item,
+      status: isBatchItemConfigComplete(item)
+        ? (['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.status : 'pending')
+        : 'failed',
+      progress: ['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.progress : 0,
+      currentVariantName: ['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.currentVariantName : '',
+      results: item.status === 'done' ? item.results : [],
+      error: isBatchItemConfigComplete(item) ? null : 'Configuration incomplete',
+    })));
+  }, [batchItems, batchRunning]);
+
+  useEffect(() => {
+    if (!batchRunning) {
+      return;
+    }
+
+    const runId = activeBatchRunRef.current;
+    const pendingItems = batchItems.filter((item) => (
+      item.status === 'pending'
+      && isBatchItemConfigComplete(item)
+      && !activeBatchJobsRef.current.has(item.id)
+      && !ignoredBatchItemsRef.current.has(item.id)
+    ));
+    const availableSlots = Math.max(0, MAX_BATCH_CONCURRENCY - activeBatchJobsRef.current.size);
+
+    pendingItems.slice(0, availableSlots).forEach((item) => {
+      void executeBatchItem(item, runId);
+    });
+
+    const hasPending = batchItems.some((item) => (
+      item.status === 'pending'
+      && isBatchItemConfigComplete(item)
+      && !ignoredBatchItemsRef.current.has(item.id)
+    ));
+
+    if (activeBatchJobsRef.current.size === 0 && !hasPending) {
+      setBatchRunning(false);
+
+      if (batchHistoryLoadedRunRef.current !== runId) {
+        batchHistoryLoadedRunRef.current = runId;
+        void loadHistory();
+      }
+    }
+  }, [batchItems, batchRunning, executeBatchItem, loadHistory]);
+
+  const downloadBatchResults = useCallback(async () => {
+    if (!canDownloadBatch) return;
+
+    setBatchDownloading(true);
+    setError(null);
+
+    try {
+      const completedItems = batchItems.filter((item) => item.results.length > 0);
+      const collections = completedItems.map((item, index) => {
+        const preset = presets.find((entry) => entry.id === item.presetId) || null;
+        return {
+          folderName: item.name.replace(/\.[^.]+$/, ''),
+          outputFormat: preset?.outputFormat || 'png',
+          assets: item.results,
+          fallbackIndex: index,
+        };
+      });
+
+      await saveCollections({
+        collections,
+        archiveName: `flash-batch-${new Date().toISOString().slice(0, 10)}.zip`,
+        title: 'FLASH batch',
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBatchDownloading(false);
+    }
+  }, [batchItems, canDownloadBatch, presets, saveCollections]);
+
+  const downloadResultsBundle = useCallback(async () => {
+    if (!canDownloadResults) return;
+
+    setResultsDownloading(true);
+    setError(null);
+
+    try {
+      await saveCollections({
+        collections: [{
+        folderName: resultsMeta.folderName,
+        outputFormat: resultsMeta.outputFormat,
+        assets: results,
+      }],
+        archiveName: resultsMeta.archiveName,
+        title: 'FLASH resultats',
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setResultsDownloading(false);
+    }
+  }, [canDownloadResults, results, resultsMeta, saveCollections]);
 
   const reset = useCallback(() => {
     resetGenerationContext();
@@ -625,6 +1309,18 @@ export default function App() {
     setStep('capture');
     stopCamera();
   }, [clearSourceImages, resetGenerationContext, stopCamera]);
+
+  const resetBatch = useCallback(() => {
+    activeBatchRunRef.current += 1;
+    activeBatchJobsRef.current.clear();
+    ignoredBatchItemsRef.current.clear();
+    batchHistoryLoadedRunRef.current = null;
+    setBatchRunning(false);
+    clearBatchItems();
+    setError(null);
+    setStep('capture');
+    stopCamera();
+  }, [clearBatchItems, stopCamera]);
 
   const deleteHistory = async (taskId) => {
     try {
@@ -792,7 +1488,13 @@ export default function App() {
   };
 
   const viewHistoryItem = (item) => {
+    const historyPreset = presets.find((preset) => preset.id === item.presetId) || null;
     setResults(normalizeAssets(item.images));
+    setResultsMeta({
+      archiveName: `flash-${sanitizeFileName(item.presetName || presetNameMap[item.presetId] || 'historique', 'historique')}-${new Date().toISOString().slice(0, 10)}.zip`,
+      folderName: sanitizeFileName(item.presetName || presetNameMap[item.presetId] || 'historique', 'historique'),
+      outputFormat: historyPreset?.outputFormat || 'png',
+    });
     setSelectedPresetId(item.presetId);
     setShowHistory(false);
     setStep('results');
@@ -804,12 +1506,20 @@ export default function App() {
     <div className="app">
       <header className="header">
         {(step !== 'capture' || showHistory) && (
-          <button className="btn-back" onClick={() => {
-            if (showHistory) setShowHistory(false);
-            else if (editingPreset) setEditingPreset(null);
-            else if (step === 'results') reset();
-            else { stopCamera(); setStep('capture'); }
-          }}>
+          <button
+            className="btn-back"
+            disabled={step === 'batch' && batchRunning}
+            onClick={() => {
+              if (showHistory) setShowHistory(false);
+              else if (editingPreset) setEditingPreset(null);
+              else if (step === 'results') reset();
+              else if (step === 'batch') setStep('capture');
+              else {
+                stopCamera();
+                setStep('capture');
+              }
+            }}
+          >
             <ChevronLeft size={22} />
           </button>
         )}
@@ -830,7 +1540,9 @@ export default function App() {
             </>
           )}
           {step !== 'capture' && !showHistory && (
-            <button className="btn-back" onClick={reset}><RotateCcw size={17} /></button>
+            <button className="btn-back" onClick={step === 'batch' ? resetBatch : reset} disabled={step === 'batch' && batchRunning}>
+              <RotateCcw size={17} />
+            </button>
           )}
         </div>
       </header>
@@ -842,12 +1554,11 @@ export default function App() {
         </div>
       )}
 
-      {/* === HISTORY === */}
       {showHistory && (
         <div className="screen">
           <h2 className="section-title"><Clock size={16} /> Historique</h2>
           {history.length === 0 ? (
-            <p className="empty-msg">Aucune génération pour l'instant</p>
+            <p className="empty-msg">Aucune generation pour l'instant</p>
           ) : (
             <div className="history-list">
               {history.map((item) => (
@@ -857,7 +1568,7 @@ export default function App() {
                   </div>
                   <div className="history-info">
                     <strong>{item.presetName || presetNameMap[item.presetId] || item.presetId}</strong>
-                    <small>{formatDate(item.date)} · {item.images.length} asset{item.images.length > 1 ? 's' : ''}</small>
+                    <small>{formatDate(item.date)} - {item.images.length} asset{item.images.length > 1 ? 's' : ''}</small>
                   </div>
                   <button className="btn-delete" onClick={(e) => { e.stopPropagation(); deleteHistory(item.taskId); }}>
                     <Trash2 size={16} />
@@ -869,7 +1580,6 @@ export default function App() {
         </div>
       )}
 
-      {/* === CAPTURE === */}
       {step === 'capture' && !showHistory && (
         <div className="screen">
           <div className="page-intro">
@@ -898,23 +1608,22 @@ export default function App() {
           </div>
           <div className="quick-actions">
             <button className="btn-secondary wide" onClick={() => setStep('preset')}>
-              <Layers3 size={18} />
-              <span>Bibliotheque presets</span>
+              <SlidersHorizontal size={18} />
+              <span>Preset unique</span>
             </button>
-            <button className="btn-secondary wide" onClick={() => { loadHistory(); setShowHistory(true); }}>
-              <Clock size={18} />
-              <span>Sessions recentes</span>
+            <button className="btn-secondary wide" onClick={() => setStep('batch')}>
+              <Layers3 size={18} />
+              <span>Batch x10</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* === PRESET === */}
       {step === 'preset' && (
         <div className="screen">
           <div className="page-intro">
             <h2 className="section-title"><SlidersHorizontal size={16} /> Presets de shooting</h2>
-            <p className="section-copy">Construis des recettes de shooting réutilisables avec plusieurs variantes automatiques.</p>
+            <p className="section-copy">Construis des recettes de shooting reutilisables avec plusieurs variantes automatiques.</p>
           </div>
 
           <div className="preview-card">
@@ -974,6 +1683,10 @@ export default function App() {
             <button className="btn-secondary" onClick={duplicatePreset} disabled={!selectedPreset}>
               <Copy size={16} />
               <span>Dupliquer</span>
+            </button>
+            <button className="btn-secondary" onClick={() => setStep('batch')} disabled={Boolean(editingPreset)}>
+              <Layers3 size={16} />
+              <span>Mode batch</span>
             </button>
             <button className="btn-secondary danger" onClick={removePreset} disabled={!selectedPreset || Boolean(editingPreset)}>
               <Trash2 size={16} />
@@ -1085,88 +1798,89 @@ export default function App() {
                   const effective = getEffectiveVariantConfig(editingPreset, variant);
 
                   return (
-                  <div key={variant.id} className="variant-card">
-                    <div className="variant-row">
+                    <div key={variant.id} className="variant-card">
+                      <div className="variant-row">
+                        <label className="field">
+                          <span>Nom de la vue</span>
+                          <input value={variant.name} onChange={(e) => updateEditingVariant(variant.id, 'name', e.target.value)} />
+                        </label>
+                        <label className="field narrow">
+                          <span>Ratio</span>
+                          <select value={variant.aspectRatio} onChange={(e) => updateEditingVariant(variant.id, 'aspectRatio', e.target.value)}>
+                            <option value="auto">AUTO</option>
+                            <option value="1:1">1:1</option>
+                            <option value="4:5">4:5</option>
+                            <option value="9:16">9:16</option>
+                            <option value="16:9">16:9</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="variant-row">
+                        <div className="field">
+                          <span>Reference image</span>
+                          <div className="field-readonly">
+                            {variant.isMaster
+                              ? 'References source de la session courante'
+                              : 'Master asset de la session courante'}
+                          </div>
+                        </div>
+                        <label className="checkbox-row master-row">
+                          <input
+                            type="checkbox"
+                            checked={variant.isMaster}
+                            onChange={(e) => updateEditingVariant(variant.id, 'isMaster', e.target.checked)}
+                          />
+                          <span>Vue maitre</span>
+                        </label>
+                      </div>
                       <label className="field">
-                        <span>Nom de la vue</span>
-                        <input value={variant.name} onChange={(e) => updateEditingVariant(variant.id, 'name', e.target.value)} />
+                        <span>Consigne additionnelle</span>
+                        <textarea rows={3} value={variant.promptAddon} onChange={(e) => updateEditingVariant(variant.id, 'promptAddon', e.target.value)} />
                       </label>
-                      <label className="field narrow">
-                        <span>Ratio</span>
-                        <select value={variant.aspectRatio} onChange={(e) => updateEditingVariant(variant.id, 'aspectRatio', e.target.value)}>
-                          <option value="auto">AUTO</option>
-                          <option value="1:1">1:1</option>
-                          <option value="4:5">4:5</option>
-                          <option value="9:16">9:16</option>
-                          <option value="16:9">16:9</option>
-                        </select>
+                      <label className="field">
+                        <span>Prompt complet de la variante</span>
+                        <textarea rows={6} value={variant.promptOverride} onChange={(e) => updateEditingVariant(variant.id, 'promptOverride', e.target.value)} placeholder="Si vide, FLASH utilise le prompt maitre + la consigne additionnelle." />
                       </label>
-                    </div>
-                    <div className="variant-row">
-                      <div className="field">
-                        <span>Reference image</span>
-                        <div className="field-readonly">
-                          {variant.isMaster
-                            ? 'References source de la session courante'
-                            : 'Master asset de la session courante'}
+                      <label className="field">
+                        <span>Negative prompt de la variante</span>
+                        <textarea rows={3} value={variant.negativePrompt} onChange={(e) => updateEditingVariant(variant.id, 'negativePrompt', e.target.value)} placeholder="Si vide, FLASH utilise le negative prompt du preset." />
+                      </label>
+                      <div className="effective-box">
+                        <div className="effective-head">
+                          <strong>Payload effectif</strong>
+                          <span>{effective.usesPromptOverride ? 'Prompt verrouille' : 'Prompt herite'}</span>
+                        </div>
+                        <div className="effective-grid">
+                          <div>
+                            <span className="detail-label">Source</span>
+                            <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
+                          </div>
+                          <div>
+                            <span className="detail-label">Sortie</span>
+                            <p>{effective.aspectRatio} - {effective.resolution} - {effective.outputFormat.toUpperCase()}</p>
+                          </div>
+                        </div>
+                        <div className="effective-section">
+                          <span className="detail-label">Prompt reel envoye</span>
+                          <pre>{effective.prompt}</pre>
                         </div>
                       </div>
-                      <label className="checkbox-row master-row">
-                        <input
-                          type="checkbox"
-                          checked={variant.isMaster}
-                          onChange={(e) => updateEditingVariant(variant.id, 'isMaster', e.target.checked)}
-                        />
-                        <span>Vue maître</span>
-                      </label>
-                    </div>
-                    <label className="field">
-                      <span>Consigne additionnelle</span>
-                      <textarea rows={3} value={variant.promptAddon} onChange={(e) => updateEditingVariant(variant.id, 'promptAddon', e.target.value)} />
-                    </label>
-                    <label className="field">
-                      <span>Prompt complet de la variante</span>
-                      <textarea rows={6} value={variant.promptOverride} onChange={(e) => updateEditingVariant(variant.id, 'promptOverride', e.target.value)} placeholder="Si vide, FLASH utilise le prompt maitre + la consigne additionnelle." />
-                    </label>
-                    <label className="field">
-                      <span>Negative prompt de la variante</span>
-                      <textarea rows={3} value={variant.negativePrompt} onChange={(e) => updateEditingVariant(variant.id, 'negativePrompt', e.target.value)} placeholder="Si vide, FLASH utilise le negative prompt du preset." />
-                    </label>
-                    <div className="effective-box">
-                      <div className="effective-head">
-                        <strong>Payload effectif</strong>
-                        <span>{effective.usesPromptOverride ? 'Prompt verrouille' : 'Prompt herite'}</span>
-                      </div>
-                      <div className="effective-grid">
-                        <div>
-                          <span className="detail-label">Source</span>
-                          <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
-                        </div>
-                        <div>
-                          <span className="detail-label">Sortie</span>
-                          <p>{effective.aspectRatio} · {effective.resolution} · {effective.outputFormat.toUpperCase()}</p>
-                        </div>
-                      </div>
-                      <div className="effective-section">
-                        <span className="detail-label">Prompt reel envoye</span>
-                        <pre>{effective.prompt}</pre>
+                      <div className="variant-actions">
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={variant.enabledByDefault}
+                            onChange={(e) => updateEditingVariant(variant.id, 'enabledByDefault', e.target.checked)}
+                          />
+                          <span>Active par defaut</span>
+                        </label>
+                        <button className="btn-delete inline" onClick={() => removeVariant(variant.id)}>
+                          <Trash2 size={16} />
+                        </button>
                       </div>
                     </div>
-                    <div className="variant-actions">
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={variant.enabledByDefault}
-                          onChange={(e) => updateEditingVariant(variant.id, 'enabledByDefault', e.target.checked)}
-                        />
-                        <span>Active par défaut</span>
-                      </label>
-                      <button className="btn-delete inline" onClick={() => removeVariant(variant.id)}>
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                )})}
+                  );
+                })}
               </div>
 
               <div className="toolbar">
@@ -1181,7 +1895,7 @@ export default function App() {
               <div className="detail-head">
                 <div>
                   <h3>{currentPresetForDisplay.name}</h3>
-                  <p>{currentPresetForDisplay.description || 'Preset prêt pour une production réutilisable.'}</p>
+                  <p>{currentPresetForDisplay.description || 'Preset pret pour une production reutilisable.'}</p>
                 </div>
                 <span className="editor-badge">{themeMeta(currentPresetForDisplay.theme).label}</span>
               </div>
@@ -1199,13 +1913,13 @@ export default function App() {
                 )}
                 <div className="detail-card">
                   <span className="detail-label">Sortie</span>
-                  <p>{currentPresetForDisplay.aspectRatio} · {currentPresetForDisplay.resolution} · {currentPresetForDisplay.outputFormat.toUpperCase()}</p>
+                  <p>{currentPresetForDisplay.aspectRatio} - {currentPresetForDisplay.resolution} - {currentPresetForDisplay.outputFormat.toUpperCase()}</p>
                 </div>
               </div>
 
               <div className="variants-head">
-                <h3>Variantes à produire</h3>
-                <span className="subtle">{selectedVariantIds.length} sélectionnée{selectedVariantIds.length > 1 ? 's' : ''}</span>
+                <h3>Variantes a produire</h3>
+                <span className="subtle">{selectedVariantIds.length} selectionnee{selectedVariantIds.length > 1 ? 's' : ''}</span>
               </div>
               <div className="variant-list">
                 {currentPresetForDisplay.variants.map((variant) => {
@@ -1213,54 +1927,61 @@ export default function App() {
                   const effective = getEffectiveVariantConfig(currentPresetForDisplay, variant);
                   return (
                     <div key={variant.id} className={`variant-select ${checked ? 'active' : ''}`}>
-                    <button className="variant-select-main" onClick={() => toggleVariantSelection(variant.id)}>
-                      <div className="variant-check">
-                        {checked ? <CheckSquare size={18} /> : <Square size={18} />}
-                      </div>
-                      <div className="variant-content">
-                        <strong>{variant.name}</strong>
-                        <small>
-                          {variant.isMaster
-                            ? 'Vue maître générée depuis les references source de la session'
-                            : `Source : master asset de la session courante · ${variant.promptAddon || 'Aucune consigne additionnelle'}`}
-                        </small>
-                      </div>
-                      <span className="variant-ratio">{variant.aspectRatio}</span>
-                    </button>
-                    <div className="variant-debug">
-                      <div className="variant-debug-grid">
-                        <div>
-                          <span className="detail-label">Source reelle</span>
-                          <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
+                      <button className="variant-select-main" onClick={() => toggleVariantSelection(variant.id)}>
+                        <div className="variant-check">
+                          {checked ? <CheckSquare size={18} /> : <Square size={18} />}
                         </div>
-                        <div>
-                          <span className="detail-label">Payload</span>
-                          <p>{effective.aspectRatio} · {effective.resolution} · {effective.outputFormat.toUpperCase()}</p>
+                        <div className="variant-content">
+                          <strong>{variant.name}</strong>
+                          <small>
+                            {variant.isMaster
+                              ? 'Vue maitre generee depuis les references source de la session'
+                              : `Source : master asset de la session courante - ${variant.promptAddon || 'Aucune consigne additionnelle'}`}
+                          </small>
                         </div>
-                        <div>
-                          <span className="detail-label">Prompt</span>
-                          <p>{effective.usesPromptOverride ? 'Prompt complet de variante' : 'Prompt maitre + consigne'}</p>
+                        <span className="variant-ratio">{variant.aspectRatio}</span>
+                      </button>
+                      <div className="variant-debug">
+                        <div className="variant-debug-grid">
+                          <div>
+                            <span className="detail-label">Source reelle</span>
+                            <p>{variant.isMaster ? 'References source de la session courante' : 'Master asset de la session courante'}</p>
+                          </div>
+                          <div>
+                            <span className="detail-label">Payload</span>
+                            <p>{effective.aspectRatio} - {effective.resolution} - {effective.outputFormat.toUpperCase()}</p>
+                          </div>
+                          <div>
+                            <span className="detail-label">Prompt</span>
+                            <p>{effective.usesPromptOverride ? 'Prompt complet de variante' : 'Prompt maitre + consigne'}</p>
+                          </div>
+                          <div>
+                            <span className="detail-label">Negative</span>
+                            <p>{effective.usesVariantNegativePrompt ? 'Negative de variante' : 'Negative du preset'}</p>
+                          </div>
                         </div>
-                        <div>
-                          <span className="detail-label">Negative</span>
-                          <p>{effective.usesVariantNegativePrompt ? 'Negative de variante' : 'Negative du preset'}</p>
+                        <div className="effective-section">
+                          <span className="detail-label">Prompt reel envoye a KIE</span>
+                          <pre>{effective.prompt}</pre>
                         </div>
                       </div>
-                      <div className="effective-section">
-                        <span className="detail-label">Prompt reel envoye a KIE</span>
-                        <pre>{effective.prompt}</pre>
-                      </div>
-                    </div>
                     </div>
                   );
                 })}
               </div>
 
+              <div className="toolbar">
+                <button className="btn-secondary" onClick={() => setStep('batch')}>
+                  <Layers3 size={16} />
+                  <span>Basculer en batch</span>
+                </button>
+              </div>
+
               <button className="btn-main" disabled={sourceImages.length === 0 || generating || selectedVariantIds.length === 0} onClick={generate}>
                 {generating ? (
-                  <><span className="spinner" />Génération {currentVariantName ? `· ${currentVariantName}` : ''} · {Math.round(progress)}%</>
+                  <><span className="spinner" />Generation {currentVariantName ? `- ${currentVariantName}` : ''} - {Math.round(progress)}%</>
                 ) : (
-                  <><Sparkles size={18} />Générer la série</>
+                  <><Sparkles size={18} />Generer la serie</>
                 )}
               </button>
               {sourceImages.length === 0 && <p className="helper-text">Ajoute d'abord une ou plusieurs references pour lancer ce preset.</p>}
@@ -1276,23 +1997,180 @@ export default function App() {
         </div>
       )}
 
-      {/* === RESULTS === */}
+      {step === 'batch' && (
+        <div className="screen">
+          <div className="page-intro">
+            <h2 className="section-title"><Layers3 size={16} /> Batch produits</h2>
+            <p className="section-copy">Prepare jusqu'a {MAX_BATCH_ITEMS} produits et lance leur generation en parallele. Chaque carte garde son preset, sa progression et ses resultats.</p>
+          </div>
+
+          <div className="batch-summary">
+            <div className="summary-pill"><strong>{batchSummary.total}</strong><span>produits</span></div>
+            <div className="summary-pill"><strong>{batchSummary.done}</strong><span>termines</span></div>
+            <div className="summary-pill"><strong>{batchSummary.failed}</strong><span>erreurs</span></div>
+            <div className="summary-pill"><strong>{batchSummary.assets}</strong><span>assets</span></div>
+          </div>
+
+          <div className="toolbar">
+            <button className="btn-secondary" onClick={() => batchFileRef.current?.click()} disabled={batchItems.length >= MAX_BATCH_ITEMS}>
+              <Plus size={16} />
+              <span>Ajouter des produits</span>
+            </button>
+            <button className="btn-main batch-cta" onClick={startBatchGeneration} disabled={launchableBatchCount === 0}>
+              {batchRunning
+                ? <><span className="spinner" />Lancer les nouveaux ({launchableBatchCount})</>
+                : <><Sparkles size={18} />Generer le batch</>}
+            </button>
+            <button className="btn-secondary" onClick={downloadBatchResults} disabled={!canDownloadBatch}>
+              <Download size={16} />
+              <span>{batchDownloading ? (prefersDirectMobileSave ? 'Preparation des images...' : 'Preparation du zip...') : (prefersDirectMobileSave ? 'Tout enregistrer' : 'Tout telecharger')}</span>
+            </button>
+          </div>
+
+          {batchItems.length === 0 ? (
+            <div className="preview-empty batch-empty">
+              <Layers3 size={28} />
+              <p>Ajoute plusieurs photos produit pour lancer jusqu'a 10 generations en meme temps.</p>
+              <button className="btn-secondary" onClick={() => batchFileRef.current?.click()}>
+                <Plus size={16} />
+                <span>Ajouter des produits</span>
+              </button>
+            </div>
+          ) : (
+            <div className="batch-list">
+              {batchItems.map((item, index) => {
+                const preset = presets.find((entry) => entry.id === item.presetId) || null;
+                return (
+                  <div key={item.id} className={`batch-card status-${item.status}`}>
+                    <div className="batch-card-head">
+                      <div>
+                        <strong>{item.name}</strong>
+                        <small>Produit {index + 1} - {preset?.name || 'Preset manquant'}</small>
+                      </div>
+                      <span className={`batch-badge status-${item.status}`}>{batchStatusLabel(item.status)}</span>
+                    </div>
+
+                    <div className="batch-card-body">
+                      <div className="batch-thumb">
+                        <img src={item.sourceImages[0]?.previewUrl} alt={item.name} />
+                      </div>
+                      <div className="batch-config">
+                        <label className="field">
+                          <span>Preset</span>
+                          <select
+                            value={item.presetId || ''}
+                            onChange={(e) => updateBatchItemPreset(item.id, e.target.value)}
+                            disabled={isBatchItemLocked(item.status)}
+                          >
+                            {presets.map((presetOption) => (
+                              <option key={presetOption.id} value={presetOption.id}>{presetOption.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="batch-meta-grid">
+                          <div className="detail-card compact">
+                            <span className="detail-label">Sources</span>
+                            <p>{item.sourceImages.length} reference{item.sourceImages.length > 1 ? 's' : ''}</p>
+                          </div>
+                          <div className="detail-card compact">
+                            <span className="detail-label">Variantes</span>
+                            <p>{item.selectedVariantIds.length} par defaut</p>
+                          </div>
+                          <div className="detail-card compact">
+                            <span className="detail-label">Progression</span>
+                            <p>{Math.round(item.progress)}%</p>
+                          </div>
+                        </div>
+                        <div className="toolbar batch-card-toolbar">
+                          <button
+                            className="btn-secondary"
+                            onClick={() => openBatchSourcePicker(item.id)}
+                            disabled={isBatchItemLocked(item.status)}
+                          >
+                            <Plus size={16} />
+                            <span>Ajouter refs</span>
+                          </button>
+                        </div>
+                        {item.currentVariantName && <p className="helper-text left">{item.currentVariantName}</p>}
+                        {item.error && <p className="batch-error">{item.error}</p>}
+                      </div>
+                    </div>
+
+                    {item.sourceImages.length > 0 && (
+                      <div className="batch-sources-grid">
+                        {item.sourceImages.map((image, imageIndex) => (
+                          <div key={image.id} className="batch-source-thumb">
+                            <img src={image.previewUrl} alt={image.name || `Reference ${imageIndex + 1}`} />
+                            <div className="batch-source-meta">
+                              <span>{imageIndex === 0 ? 'Vue principale' : `Ref ${imageIndex + 1}`}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn-delete preview-remove"
+                              onClick={() => removeBatchSourceImage(item.id, image.id)}
+                              disabled={isBatchItemLocked(item.status)}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="progress">
+                      <div className="progress-fill" style={{ width: `${item.progress}%` }} />
+                    </div>
+
+                    {item.results.length > 0 && (
+                      <div className="batch-results-grid">
+                        {item.results.slice(0, 4).map((asset) => (
+                          <div key={asset.id} className="batch-result-thumb">
+                            <img src={asset.url} alt={asset.label} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="batch-actions">
+                      <span className="subtle">{item.results.length} resultat{item.results.length > 1 ? 's' : ''}</span>
+                      <button className="btn-delete" onClick={() => removeBatchItem(item.id)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {step === 'results' && (
         <div className="screen">
           <div className="page-intro">
-            <h2 className="section-title"><Sparkles size={16} /> Résultats</h2>
-            <p className="section-copy">Assets produits avec le preset sélectionné, prêts à être téléchargés ou rejoués.</p>
+            <h2 className="section-title"><Sparkles size={16} /> Resultats</h2>
+            <p className="section-copy">Assets produits avec le preset selectionne, prets a etre telecharges ou rejoues.</p>
+          </div>
+          <div className="toolbar">
+            <button className="btn-secondary" onClick={downloadResultsBundle} disabled={!canDownloadResults}>
+              <Download size={16} />
+              <span>{resultsDownloading ? (prefersDirectMobileSave ? 'Preparation des images...' : 'Preparation du zip...') : (prefersDirectMobileSave ? 'Tout enregistrer' : 'Tout telecharger')}</span>
+            </button>
           </div>
           <div className="gallery">
             {results.map((asset, i) => (
               <div key={asset.id || i} className="gallery-item">
-                <img src={asset.url} alt={asset.label || `Résultat ${i + 1}`} />
+                <img src={asset.url} alt={asset.label || `Resultat ${i + 1}`} />
                 <div className="gallery-meta">
-                  <strong>{asset.label || `Résultat ${i + 1}`}</strong>
+                  <strong>{asset.label || `Resultat ${i + 1}`}</strong>
                 </div>
-                <a href={asset.url} download={`flash-${selectedPresetId || 'preset'}-${i + 1}.png`} className="btn-dl">
+                <button
+                  type="button"
+                  className="btn-dl"
+                  onClick={() => downloadSingleResult(asset, `flash-${selectedPresetId || 'preset'}-${i + 1}.${resultsMeta.outputFormat || getAssetExtension(asset.url, 'png')}`)}
+                >
                   <Download size={16} />
-                </a>
+                </button>
               </div>
             ))}
           </div>
@@ -1303,6 +2181,8 @@ export default function App() {
       )}
 
       <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFileUpload} hidden />
+      <input ref={batchFileRef} type="file" accept="image/*" multiple onChange={handleBatchFileUpload} hidden />
+      <input ref={batchSourceFileRef} type="file" accept="image/*" multiple onChange={handleBatchSourceUpload} hidden />
     </div>
   );
 }
