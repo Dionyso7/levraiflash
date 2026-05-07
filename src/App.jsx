@@ -28,8 +28,8 @@ import './App.css';
 
 const API = '/api';
 const CLIENT_ID_KEY = 'flash_client_id';
-const MAX_BATCH_ITEMS = 10;
-const MAX_BATCH_CONCURRENCY = 10;
+const MAX_BATCH_ITEMS = 20;
+const MAX_BATCH_CONCURRENCY = 20;
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -1613,7 +1613,7 @@ export default function App() {
             </button>
             <button className="btn-secondary wide" onClick={() => setStep('batch')}>
               <Layers3 size={18} />
-              <span>Batch x10</span>
+              <span>Batch x20</span>
             </button>
           </div>
         </div>
@@ -2030,7 +2030,7 @@ export default function App() {
           {batchItems.length === 0 ? (
             <div className="preview-empty batch-empty">
               <Layers3 size={28} />
-              <p>Ajoute plusieurs photos produit pour lancer jusqu'a 10 generations en meme temps.</p>
+              <p>Ajoute plusieurs photos produit pour lancer jusqu'a 20 generations en meme temps.</p>
               <button className="btn-secondary" onClick={() => batchFileRef.current?.click()}>
                 <Plus size={16} />
                 <span>Ajouter des produits</span>
