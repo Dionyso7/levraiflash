@@ -329,6 +329,11 @@ export const DEFAULT_PRESET_TEMPLATES = [
   },
 ];
 
+const ACTIVE_DEFAULT_PRESET_KEYS = new Set([
+  'universel-editorial',
+  'joaillerie-desir',
+]);
+
 export function json(statusCode, body) {
   return {
     statusCode,
@@ -526,7 +531,9 @@ function normalizePresetInput(input, { fallbackId, clientId } = {}) {
 }
 
 function createDefaultPresetRows(clientId) {
-  return DEFAULT_PRESET_TEMPLATES.map((template) => normalizePresetInput({
+  return DEFAULT_PRESET_TEMPLATES
+    .filter((template) => ACTIVE_DEFAULT_PRESET_KEYS.has(template.key))
+    .map((template) => normalizePresetInput({
     id: `${clientId}_${template.key}`,
     name: template.name,
     description: template.description,
