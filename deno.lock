@@ -19,6 +19,7 @@
         "npm:eslint-plugin-react-refresh@~0.5.2",
         "npm:eslint@^10.2.1",
         "npm:globals@^17.5.0",
+        "npm:jszip@^3.10.1",
         "npm:lucide-react@^1.14.0",
         "npm:netlify-cli@26",
         "npm:react-dom@^19.2.5",

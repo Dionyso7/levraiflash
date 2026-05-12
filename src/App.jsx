@@ -1,9 +1,10 @@
-﻿import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Camera,
   X,
   Zap,
   Download,
+  ChevronDown,
   ChevronLeft,
   RotateCcw,
   Image,
@@ -30,6 +31,9 @@ const API = '/api';
 const CLIENT_ID_KEY = 'flash_client_id';
 const MAX_BATCH_ITEMS = 20;
 const MAX_BATCH_CONCURRENCY = 20;
+const BATCH_DB_NAME = 'flash_batch';
+const BATCH_STORE_NAME = 'batch_state';
+const BATCH_STATE_KEY = 'current';
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -74,6 +78,15 @@ function createVariant(overrides = {}) {
     enabledByDefault: overrides.enabledByDefault ?? true,
     isMaster,
     sourceMode: isMaster ? 'source' : 'master',
+  };
+}
+
+function createBatchFolder(overrides = {}) {
+  return {
+    id: overrides.id || crypto.randomUUID(),
+    name: overrides.name || 'Nouvelle boutique',
+    presetId: overrides.presetId ?? null,
+    collapsed: overrides.collapsed ?? false,
   };
 }
 
@@ -238,7 +251,7 @@ function batchStatusLabel(status) {
   }
 }
 
-function createBatchItem(file, previewUrl, preset, preferredVariantIds = []) {
+function createBatchItem(file, previewUrl, preset, preferredVariantIds = [], overrides = {}) {
   const validVariantIds = preset
     ? preferredVariantIds.filter((id) => preset.variants.some((variant) => variant.id === id))
     : [];
@@ -246,6 +259,7 @@ function createBatchItem(file, previewUrl, preset, preferredVariantIds = []) {
   return {
     id: crypto.randomUUID(),
     name: file?.name || `Produit-${Date.now()}`,
+    folderId: overrides.folderId || null,
     sourceImages: [createSourceImage(file, previewUrl)],
     presetId: preset?.id || null,
     selectedVariantIds: validVariantIds.length ? validVariantIds : defaultSelectedVariantIds(preset),
@@ -272,6 +286,92 @@ function isLikelyMobileDevice() {
 
   const userAgent = navigator.userAgent || '';
   return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+}
+
+function serializeBatchState({ folders, items }) {
+  return {
+    folders: folders.map((folder) => ({
+      id: folder.id,
+      name: folder.name,
+      presetId: folder.presetId ?? null,
+      collapsed: Boolean(folder.collapsed),
+    })),
+    items: items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      folderId: item.folderId ?? null,
+      presetId: item.presetId ?? null,
+      selectedVariantIds: Array.isArray(item.selectedVariantIds) ? item.selectedVariantIds : [],
+      status: item.status,
+      progress: item.progress,
+      currentVariantName: item.currentVariantName,
+      results: Array.isArray(item.results) ? item.results : [],
+      error: item.error,
+      sourceImages: item.sourceImages.map((image) => ({
+        id: image.id,
+        name: image.name,
+        file: image.file,
+      })),
+    })),
+  };
+}
+
+function openBatchDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      resolve(null);
+      return;
+    }
+
+    const request = indexedDB.open(BATCH_DB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(BATCH_STORE_NAME)) {
+        db.createObjectStore(BATCH_STORE_NAME);
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Impossible d ouvrir le stockage batch'));
+  });
+}
+
+async function readPersistedBatchState(clientId) {
+  const db = await openBatchDb();
+  if (!db) {
+    return null;
+  }
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(BATCH_STORE_NAME, 'readonly');
+    const store = transaction.objectStore(BATCH_STORE_NAME);
+    const request = store.get(`${clientId}:${BATCH_STATE_KEY}`);
+
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error('Impossible de lire le batch'));
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => db.close();
+  });
+}
+
+async function writePersistedBatchState(clientId, state) {
+  const db = await openBatchDb();
+  if (!db) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(BATCH_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(BATCH_STORE_NAME);
+    store.put(state, `${clientId}:${BATCH_STATE_KEY}`);
+
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error('Impossible de sauvegarder le batch'));
+    transaction.onabort = () => reject(transaction.error || new Error('Sauvegarde batch interrompue'));
+  });
+
+  db.close();
 }
 
 function downloadBlob(blob, fileName) {
@@ -357,9 +457,14 @@ async function shareFiles(files, title = 'FLASH') {
 export default function App() {
   const [step, setStep] = useState('capture');
   const [sourceImages, setSourceImages] = useState([]);
+  const [batchFolders, setBatchFolders] = useState([]);
   const [batchItems, setBatchItems] = useState([]);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchDownloading, setBatchDownloading] = useState(false);
+  const [selectedBatchFolderId, setSelectedBatchFolderId] = useState(null);
+  const [editingBatchFolderId, setEditingBatchFolderId] = useState(null);
+  const [editingBatchFolderName, setEditingBatchFolderName] = useState('');
+  const [batchStateReady, setBatchStateReady] = useState(false);
   const [presets, setPresets] = useState([]);
   const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [editingPreset, setEditingPreset] = useState(null);
@@ -385,6 +490,7 @@ export default function App() {
   const fileRef = useRef(null);
   const batchFileRef = useRef(null);
   const batchSourceFileRef = useRef(null);
+  const batchFileTargetFolderRef = useRef(null);
   const clientIdRef = useRef(getClientId());
   const activeGenerationRef = useRef(0);
   const activeBatchRunRef = useRef(0);
@@ -404,8 +510,8 @@ export default function App() {
   );
   const batchSummary = useMemo(() => {
     const summary = {
+      folders: batchFolders.length,
       total: batchItems.length,
-      pending: 0,
       running: 0,
       done: 0,
       failed: 0,
@@ -421,15 +527,7 @@ export default function App() {
     });
 
     return summary;
-  }, [batchItems]);
-  const canDownloadBatch = useMemo(() => {
-    if (batchRunning || batchDownloading || batchItems.length === 0) return false;
-    return batchItems.some((item) => item.results.length > 0);
-  }, [batchDownloading, batchItems, batchRunning]);
-  const launchableBatchCount = useMemo(
-    () => batchItems.filter((item) => isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status)).length,
-    [batchItems],
-  );
+  }, [batchFolders.length, batchItems]);
   const prefersDirectMobileSave = useMemo(
     () => isLikelyMobileDevice(),
     [],
@@ -438,6 +536,39 @@ export default function App() {
     () => results.length > 0 && !resultsDownloading,
     [results, resultsDownloading],
   );
+  const batchFoldersWithItems = useMemo(() => batchFolders.map((folder) => {
+    const items = batchItems.filter((item) => item.folderId === folder.id);
+    const preset = presets.find((entry) => entry.id === folder.presetId)
+      || presets.find((entry) => entry.id === items[0]?.presetId)
+      || null;
+    const stats = {
+      total: items.length,
+      launchable: 0,
+      running: 0,
+      done: 0,
+      failed: 0,
+      assets: 0,
+    };
+
+    items.forEach((item) => {
+      stats.assets += item.results.length;
+      if (item.status === 'done') stats.done += 1;
+      else if (item.status === 'failed') stats.failed += 1;
+      else if (['uploading', 'generating-master', 'generating-variants'].includes(item.status)) stats.running += 1;
+
+      if (isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status)) {
+        stats.launchable += 1;
+      }
+    });
+
+    return {
+      ...folder,
+      preset,
+      items,
+      stats,
+      canDownload: !batchRunning && !batchDownloading && items.some((item) => item.results.length > 0),
+    };
+  }), [batchDownloading, batchFolders, batchItems, batchRunning, presets]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -544,6 +675,87 @@ export default function App() {
   }, [loadHistory, loadPresets]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const hydrateBatchState = async () => {
+      try {
+        const stored = await readPersistedBatchState(clientIdRef.current);
+        if (cancelled || !stored) {
+          return;
+        }
+
+        const storedFolders = Array.isArray(stored.folders)
+          ? stored.folders.map((folder) => createBatchFolder(folder))
+          : [];
+        const fallbackFolderId = storedFolders[0]?.id || crypto.randomUUID();
+        const nextFolders = storedFolders.length > 0
+          ? storedFolders
+          : (Array.isArray(stored.items) && stored.items.length > 0
+            ? [createBatchFolder({ id: fallbackFolderId, name: 'Boutique 1' })]
+            : []);
+        const nextItems = Array.isArray(stored.items)
+          ? stored.items.map((item, itemIndex) => {
+            const hydratedSources = Array.isArray(item.sourceImages)
+              ? item.sourceImages.flatMap((image, imageIndex) => {
+                if (!image?.file) {
+                  return [];
+                }
+
+                const file = image.file instanceof File
+                  ? image.file
+                  : new File([image.file], image.name || `reference-${imageIndex + 1}.jpg`, {
+                    type: image.file?.type || 'image/jpeg',
+                  });
+                const previewUrl = URL.createObjectURL(file);
+                rememberPreviewUrl(previewUrl);
+
+                return [{
+                  id: image.id || crypto.randomUUID(),
+                  file,
+                  previewUrl,
+                  name: image.name || file.name,
+                }];
+              })
+              : [];
+            const safeStatus = ['draft', 'done', 'failed'].includes(item?.status) ? item.status : 'draft';
+
+            return {
+              id: item?.id || crypto.randomUUID(),
+              name: item?.name || hydratedSources[0]?.name || `Produit-${itemIndex + 1}`,
+              folderId: item?.folderId || fallbackFolderId,
+              sourceImages: hydratedSources,
+              presetId: item?.presetId || null,
+              selectedVariantIds: Array.isArray(item?.selectedVariantIds) ? item.selectedVariantIds : [],
+              status: safeStatus,
+              progress: safeStatus === 'done' ? 100 : 0,
+              currentVariantName: safeStatus === 'done' ? (item?.currentVariantName || 'Generation terminee') : '',
+              results: safeStatus === 'done' ? normalizeAssets(item?.results) : [],
+              error: safeStatus === 'failed' ? (item?.error || null) : null,
+            };
+          })
+          : [];
+
+        if (!cancelled) {
+          setBatchFolders(nextFolders);
+          setBatchItems(nextItems);
+        }
+      } catch {
+        // Le batch local est optionnel ; on ignore les erreurs de restauration.
+      } finally {
+        if (!cancelled) {
+          setBatchStateReady(true);
+        }
+      }
+    };
+
+    void hydrateBatchState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rememberPreviewUrl]);
+
+  useEffect(() => {
     if (editingPreset || !selectedPreset) {
       return;
     }
@@ -556,10 +768,22 @@ export default function App() {
   }, [selectedPreset, editingPreset]);
 
   useEffect(() => {
-    if (presets.length === 0) return;
+    if (!batchStateReady || presets.length === 0) return;
+
+    const normalizedFolders = batchFolders.map((folder) => ({
+      ...folder,
+      presetId: presets.some((preset) => preset.id === folder.presetId) ? folder.presetId : (presets[0]?.id || null),
+    }));
+
+    if (normalizedFolders.some((folder, index) => folder.presetId !== batchFolders[index]?.presetId)) {
+      setBatchFolders(normalizedFolders);
+    }
 
     setBatchItems((current) => current.map((item) => {
-      const preset = presets.find((entry) => entry.id === item.presetId) || presets[0];
+      const folder = normalizedFolders.find((entry) => entry.id === item.folderId) || null;
+      const preset = presets.find((entry) => entry.id === item.presetId)
+        || presets.find((entry) => entry.id === folder?.presetId)
+        || presets[0];
       const selectedIds = item.selectedVariantIds.filter((id) => preset.variants.some((variant) => variant.id === id));
       return {
         ...item,
@@ -567,7 +791,33 @@ export default function App() {
         selectedVariantIds: selectedIds.length ? selectedIds : defaultSelectedVariantIds(preset),
       };
     }));
-  }, [presets]);
+  }, [batchFolders, batchStateReady, presets]);
+
+  useEffect(() => {
+    if (batchFolders.length === 0) {
+      setSelectedBatchFolderId(null);
+      setEditingBatchFolderId(null);
+      setEditingBatchFolderName('');
+      return;
+    }
+
+    setSelectedBatchFolderId((current) => (
+      batchFolders.some((folder) => folder.id === current) ? current : batchFolders[0].id
+    ));
+  }, [batchFolders]);
+
+  useEffect(() => {
+    if (!batchStateReady) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      void writePersistedBatchState(
+        clientIdRef.current,
+        serializeBatchState({ folders: batchFolders, items: batchItems }),
+      ).catch(() => {});
+    }, 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [batchFolders, batchItems, batchStateReady]);
 
   useEffect(() => () => {
     sourcePreviewUrlsRef.current.forEach((previewUrl) => URL.revokeObjectURL(previewUrl));
@@ -615,7 +865,41 @@ export default function App() {
     e.target.value = '';
   }, [addSourceImages]);
 
-  const addBatchFiles = useCallback((files) => {
+  const createEmptyBatchFolder = useCallback(() => {
+    const nextFolder = createBatchFolder({
+      name: `Boutique ${batchFolders.length + 1}`,
+      presetId: selectedPreset?.id || presets[0]?.id || null,
+    });
+
+    setBatchFolders((current) => [...current, nextFolder]);
+    setSelectedBatchFolderId(nextFolder.id);
+    setEditingBatchFolderId(nextFolder.id);
+    setEditingBatchFolderName(nextFolder.name);
+    setStep('batch');
+    setShowHistory(false);
+    setError(null);
+  }, [batchFolders.length, presets, selectedPreset]);
+
+  const openBatchFilePicker = useCallback((folderId = null) => {
+    let targetFolderId = folderId;
+
+    if (!targetFolderId) {
+      const nextFolder = createBatchFolder({
+        name: `Boutique ${batchFolders.length + 1}`,
+        presetId: selectedPreset?.id || presets[0]?.id || null,
+      });
+      targetFolderId = nextFolder.id;
+      setBatchFolders((current) => [...current, nextFolder]);
+      setSelectedBatchFolderId(nextFolder.id);
+    }
+
+    batchFileTargetFolderRef.current = targetFolderId;
+    setStep('batch');
+    setShowHistory(false);
+    batchFileRef.current?.click();
+  }, [batchFolders.length, presets, selectedPreset]);
+
+  const addBatchFiles = useCallback((files, folderId) => {
     const nextFiles = Array.from(files || []);
     if (nextFiles.length === 0) return;
 
@@ -625,27 +909,39 @@ export default function App() {
       return;
     }
 
-    const presetForNewItems = selectedPreset || presets[0] || null;
+    const targetFolder = batchFolders.find((folder) => folder.id === folderId) || null;
+    if (!targetFolder) {
+      setError('Choisis d abord une boutique pour ajouter des produits.');
+      return;
+    }
+
+    const presetForNewItems = presets.find((entry) => entry.id === targetFolder.presetId)
+      || selectedPreset
+      || presets[0]
+      || null;
     const acceptedFiles = nextFiles.slice(0, availableSlots);
     const nextItems = acceptedFiles.map((file) => {
       const previewUrl = URL.createObjectURL(file);
       rememberPreviewUrl(previewUrl);
-      return createBatchItem(file, previewUrl, presetForNewItems, selectedVariantIds);
+      return createBatchItem(file, previewUrl, presetForNewItems, selectedVariantIds, { folderId: targetFolder.id });
     });
 
     setBatchItems((current) => [...current, ...nextItems]);
+    setSelectedBatchFolderId(targetFolder.id);
     setStep('batch');
     setShowHistory(false);
 
     if (nextFiles.length > acceptedFiles.length) {
       setError(`Seulement ${MAX_BATCH_ITEMS} produits peuvent etre prepares dans le batch.`);
     }
-  }, [batchItems.length, presets, rememberPreviewUrl, selectedPreset, selectedVariantIds]);
+  }, [batchFolders, batchItems.length, presets, rememberPreviewUrl, selectedPreset, selectedVariantIds]);
 
   const handleBatchFileUpload = useCallback((e) => {
-    addBatchFiles(e.target.files || []);
+    const targetFolderId = batchFileTargetFolderRef.current || selectedBatchFolderId;
+    batchFileTargetFolderRef.current = null;
+    addBatchFiles(e.target.files || [], targetFolderId);
     e.target.value = '';
-  }, [addBatchFiles]);
+  }, [addBatchFiles, selectedBatchFolderId]);
 
   const openBatchSourcePicker = useCallback((itemId) => {
     batchSourceTargetItemRef.current = itemId;
@@ -1092,6 +1388,68 @@ export default function App() {
     setBatchItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
   }, []);
 
+  const toggleBatchFolderCollapsed = useCallback((folderId) => {
+    setBatchFolders((current) => current.map((folder) => (
+      folder.id === folderId ? { ...folder, collapsed: !folder.collapsed } : folder
+    )));
+  }, []);
+
+  const startBatchFolderRename = useCallback((folder) => {
+    setEditingBatchFolderId(folder.id);
+    setEditingBatchFolderName(folder.name);
+  }, []);
+
+  const cancelBatchFolderRename = useCallback(() => {
+    setEditingBatchFolderId(null);
+    setEditingBatchFolderName('');
+  }, []);
+
+  const commitBatchFolderRename = useCallback((folderId) => {
+    const nextName = editingBatchFolderName.trim();
+    if (!nextName) {
+      cancelBatchFolderRename();
+      return;
+    }
+
+    setBatchFolders((current) => current.map((folder) => (
+      folder.id === folderId
+        ? { ...folder, name: nextName }
+        : folder
+    )));
+    cancelBatchFolderRename();
+  }, [cancelBatchFolderRename, editingBatchFolderName]);
+
+  const updateBatchFolderPreset = useCallback((folderId, presetId) => {
+    setBatchFolders((current) => current.map((folder) => (
+      folder.id === folderId
+        ? { ...folder, presetId }
+        : folder
+    )));
+  }, []);
+
+  const removeBatchFolder = useCallback((folderId) => {
+    const removedItemIds = new Set();
+
+    setBatchItems((current) => current.filter((item) => {
+      if (item.folderId !== folderId) {
+        return true;
+      }
+
+      removedItemIds.add(item.id);
+      item.sourceImages.forEach((image) => releasePreviewUrl(image.previewUrl));
+      return false;
+    }));
+
+    removedItemIds.forEach((itemId) => {
+      ignoredBatchItemsRef.current.add(itemId);
+      activeBatchJobsRef.current.delete(itemId);
+    });
+
+    setBatchFolders((current) => current.filter((folder) => folder.id !== folderId));
+    setSelectedBatchFolderId((current) => (current === folderId ? null : current));
+    setError(null);
+  }, [releasePreviewUrl]);
+
   const removeBatchItem = useCallback((itemId) => {
     ignoredBatchItemsRef.current.add(itemId);
     activeBatchJobsRef.current.delete(itemId);
@@ -1182,15 +1540,16 @@ export default function App() {
     }
   }, [presets, runGenerationJob, updateBatchItemState]);
 
-  const startBatchGeneration = useCallback(async () => {
-    if (batchItems.length === 0) {
-      setError('Ajoute au moins un produit au batch.');
+  const startBatchGeneration = useCallback(async (folderId) => {
+    const folderItems = batchItems.filter((item) => item.folderId === folderId);
+    if (folderItems.length === 0) {
+      setError('Ajoute au moins un produit dans cette boutique.');
       return;
     }
 
-    const runnableItems = batchItems.filter((item) => isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status));
+    const runnableItems = folderItems.filter((item) => isBatchItemConfigComplete(item) && ['draft', 'pending', 'failed'].includes(item.status));
     if (runnableItems.length === 0) {
-      setError('Chaque produit batch doit avoir un preset et au moins une variante active.');
+      setError('Chaque produit de cette boutique doit avoir un preset et au moins une variante active.');
       return;
     }
 
@@ -1206,13 +1565,19 @@ export default function App() {
 
     setBatchItems((current) => current.map((item) => ({
       ...item,
-      status: isBatchItemConfigComplete(item)
+      status: item.folderId === folderId && isBatchItemConfigComplete(item)
         ? (['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.status : 'pending')
-        : 'failed',
-      progress: ['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.progress : 0,
-      currentVariantName: ['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.currentVariantName : '',
+        : (item.folderId === folderId ? 'failed' : item.status),
+      progress: item.folderId === folderId
+        ? (['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.progress : 0)
+        : item.progress,
+      currentVariantName: item.folderId === folderId
+        ? (['done', 'uploading', 'generating-master', 'generating-variants'].includes(item.status) ? item.currentVariantName : '')
+        : item.currentVariantName,
       results: item.status === 'done' ? item.results : [],
-      error: isBatchItemConfigComplete(item) ? null : 'Configuration incomplete',
+      error: item.folderId === folderId
+        ? (isBatchItemConfigComplete(item) ? null : 'Configuration incomplete')
+        : item.error,
     })));
   }, [batchItems, batchRunning]);
 
@@ -1250,14 +1615,19 @@ export default function App() {
     }
   }, [batchItems, batchRunning, executeBatchItem, loadHistory]);
 
-  const downloadBatchResults = useCallback(async () => {
-    if (!canDownloadBatch) return;
+  const downloadBatchResults = useCallback(async (folderId) => {
+    const folder = batchFolders.find((entry) => entry.id === folderId) || null;
+    if (!folder || batchRunning || batchDownloading) return;
 
     setBatchDownloading(true);
     setError(null);
 
     try {
-      const completedItems = batchItems.filter((item) => item.results.length > 0);
+      const completedItems = batchItems.filter((item) => item.folderId === folderId && item.results.length > 0);
+      if (completedItems.length === 0) {
+        throw new Error('Aucun resultat disponible dans cette boutique.');
+      }
+
       const collections = completedItems.map((item, index) => {
         const preset = presets.find((entry) => entry.id === item.presetId) || null;
         return {
@@ -1270,15 +1640,15 @@ export default function App() {
 
       await saveCollections({
         collections,
-        archiveName: `flash-batch-${new Date().toISOString().slice(0, 10)}.zip`,
-        title: 'FLASH batch',
+        archiveName: `flash-${sanitizeFileName(folder.name, 'boutique')}-${new Date().toISOString().slice(0, 10)}.zip`,
+        title: folder.name,
       });
     } catch (err) {
       setError(err.message);
     } finally {
       setBatchDownloading(false);
     }
-  }, [batchItems, canDownloadBatch, presets, saveCollections]);
+  }, [batchDownloading, batchFolders, batchItems, batchRunning, presets, saveCollections]);
 
   const downloadResultsBundle = useCallback(async () => {
     if (!canDownloadResults) return;
@@ -1315,8 +1685,13 @@ export default function App() {
     activeBatchJobsRef.current.clear();
     ignoredBatchItemsRef.current.clear();
     batchHistoryLoadedRunRef.current = null;
+    batchFileTargetFolderRef.current = null;
     setBatchRunning(false);
     clearBatchItems();
+    setBatchFolders([]);
+    setSelectedBatchFolderId(null);
+    setEditingBatchFolderId(null);
+    setEditingBatchFolderName('');
     setError(null);
     setStep('capture');
     stopCamera();
@@ -2001,142 +2376,268 @@ export default function App() {
         <div className="screen">
           <div className="page-intro">
             <h2 className="section-title"><Layers3 size={16} /> Batch produits</h2>
-            <p className="section-copy">Prepare jusqu'a {MAX_BATCH_ITEMS} produits et lance leur generation en parallele. Chaque carte garde son preset, sa progression et ses resultats.</p>
+            <p className="section-copy">Organise jusqu'a {MAX_BATCH_ITEMS} produits dans des boutiques persistantes, chacune avec son preset principal, ses stats et ses actions de generation.</p>
           </div>
 
           <div className="batch-summary">
+            <div className="summary-pill"><strong>{batchSummary.folders}</strong><span>boutiques</span></div>
             <div className="summary-pill"><strong>{batchSummary.total}</strong><span>produits</span></div>
             <div className="summary-pill"><strong>{batchSummary.done}</strong><span>termines</span></div>
-            <div className="summary-pill"><strong>{batchSummary.failed}</strong><span>erreurs</span></div>
             <div className="summary-pill"><strong>{batchSummary.assets}</strong><span>assets</span></div>
           </div>
 
-          <div className="toolbar">
-            <button className="btn-secondary" onClick={() => batchFileRef.current?.click()} disabled={batchItems.length >= MAX_BATCH_ITEMS}>
-              <Plus size={16} />
-              <span>Ajouter des produits</span>
+          <div className="toolbar batch-page-toolbar">
+            <button className="btn-secondary" onClick={createEmptyBatchFolder}>
+              <ShoppingBag size={16} />
+              <span>Nouvelle boutique</span>
             </button>
-            <button className="btn-main batch-cta" onClick={startBatchGeneration} disabled={launchableBatchCount === 0}>
-              {batchRunning
-                ? <><span className="spinner" />Lancer les nouveaux ({launchableBatchCount})</>
-                : <><Sparkles size={18} />Generer le batch</>}
-            </button>
-            <button className="btn-secondary" onClick={downloadBatchResults} disabled={!canDownloadBatch}>
-              <Download size={16} />
-              <span>{batchDownloading ? (prefersDirectMobileSave ? 'Preparation des images...' : 'Preparation du zip...') : (prefersDirectMobileSave ? 'Tout enregistrer' : 'Tout telecharger')}</span>
-            </button>
+            {batchFolders.length > 0 && (
+              <>
+                <label className="field batch-folder-picker">
+                  <span>Ajouter dans</span>
+                  <select value={selectedBatchFolderId || ''} onChange={(e) => setSelectedBatchFolderId(e.target.value)}>
+                    {batchFolders.map((folder) => (
+                      <option key={folder.id} value={folder.id}>{folder.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <button className="btn-secondary" onClick={() => openBatchFilePicker(selectedBatchFolderId)} disabled={!selectedBatchFolderId || batchItems.length >= MAX_BATCH_ITEMS}>
+                  <Plus size={16} />
+                  <span>Ajouter des produits</span>
+                </button>
+              </>
+            )}
           </div>
 
-          {batchItems.length === 0 ? (
+          {batchFolders.length === 0 ? (
             <div className="preview-empty batch-empty">
-              <Layers3 size={28} />
-              <p>Ajoute plusieurs photos produit pour lancer jusqu'a 20 generations en meme temps.</p>
-              <button className="btn-secondary" onClick={() => batchFileRef.current?.click()}>
-                <Plus size={16} />
-                <span>Ajouter des produits</span>
+              <ShoppingBag size={28} />
+              <p>Cree une premiere boutique pour regrouper les produits d'une meme session sans les melanger avec les autres.</p>
+              <button className="btn-secondary" onClick={createEmptyBatchFolder}>
+                <ShoppingBag size={16} />
+                <span>Creer une boutique</span>
               </button>
             </div>
           ) : (
             <div className="batch-list">
-              {batchItems.map((item, index) => {
-                const preset = presets.find((entry) => entry.id === item.presetId) || null;
+              {batchFoldersWithItems.map((folder) => {
+                const isEditingFolder = editingBatchFolderId === folder.id;
                 return (
-                  <div key={item.id} className={`batch-card status-${item.status}`}>
-                    <div className="batch-card-head">
-                      <div>
-                        <strong>{item.name}</strong>
-                        <small>Produit {index + 1} - {preset?.name || 'Preset manquant'}</small>
-                      </div>
-                      <span className={`batch-badge status-${item.status}`}>{batchStatusLabel(item.status)}</span>
-                    </div>
-
-                    <div className="batch-card-body">
-                      <div className="batch-thumb">
-                        <img src={item.sourceImages[0]?.previewUrl} alt={item.name} />
-                      </div>
-                      <div className="batch-config">
-                        <label className="field">
-                          <span>Preset</span>
-                          <select
-                            value={item.presetId || ''}
-                            onChange={(e) => updateBatchItemPreset(item.id, e.target.value)}
-                            disabled={isBatchItemLocked(item.status)}
-                          >
-                            {presets.map((presetOption) => (
-                              <option key={presetOption.id} value={presetOption.id}>{presetOption.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <div className="batch-meta-grid">
-                          <div className="detail-card compact">
-                            <span className="detail-label">Sources</span>
-                            <p>{item.sourceImages.length} reference{item.sourceImages.length > 1 ? 's' : ''}</p>
-                          </div>
-                          <div className="detail-card compact">
-                            <span className="detail-label">Variantes</span>
-                            <p>{item.selectedVariantIds.length} par defaut</p>
-                          </div>
-                          <div className="detail-card compact">
-                            <span className="detail-label">Progression</span>
-                            <p>{Math.round(item.progress)}%</p>
-                          </div>
+                  <div key={folder.id} className="batch-folder">
+                    <div className="batch-folder-head">
+                      <button className="batch-folder-toggle" onClick={() => toggleBatchFolderCollapsed(folder.id)}>
+                        <span className={`batch-folder-chevron ${folder.collapsed ? 'collapsed' : ''}`}>
+                          <ChevronDown size={16} />
+                        </span>
+                        <div className="batch-folder-title">
+                          {isEditingFolder ? (
+                            <input
+                              value={editingBatchFolderName}
+                              onChange={(e) => setEditingBatchFolderName(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  commitBatchFolderRename(folder.id);
+                                }
+                                if (e.key === 'Escape') {
+                                  cancelBatchFolderRename();
+                                }
+                              }}
+                              onBlur={() => commitBatchFolderRename(folder.id)}
+                              autoFocus
+                            />
+                          ) : (
+                            <>
+                              <strong>{folder.name}</strong>
+                              <small>{folder.preset?.name || 'Preset principal manquant'} - {folder.stats.total} produit{folder.stats.total > 1 ? 's' : ''}</small>
+                            </>
+                          )}
                         </div>
-                        <div className="toolbar batch-card-toolbar">
-                          <button
-                            className="btn-secondary"
-                            onClick={() => openBatchSourcePicker(item.id)}
-                            disabled={isBatchItemLocked(item.status)}
-                          >
-                            <Plus size={16} />
-                            <span>Ajouter refs</span>
-                          </button>
-                        </div>
-                        {item.currentVariantName && <p className="helper-text left">{item.currentVariantName}</p>}
-                        {item.error && <p className="batch-error">{item.error}</p>}
-                      </div>
-                    </div>
+                      </button>
 
-                    {item.sourceImages.length > 0 && (
-                      <div className="batch-sources-grid">
-                        {item.sourceImages.map((image, imageIndex) => (
-                          <div key={image.id} className="batch-source-thumb">
-                            <img src={image.previewUrl} alt={image.name || `Reference ${imageIndex + 1}`} />
-                            <div className="batch-source-meta">
-                              <span>{imageIndex === 0 ? 'Vue principale' : `Ref ${imageIndex + 1}`}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="btn-delete preview-remove"
-                              onClick={() => removeBatchSourceImage(item.id, image.id)}
-                              disabled={isBatchItemLocked(item.status)}
-                            >
+                      <div className="batch-folder-actions">
+                        {isEditingFolder ? (
+                          <>
+                            <button className="btn-secondary compact" type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => commitBatchFolderRename(folder.id)}>
+                              <Save size={14} />
+                              <span>OK</span>
+                            </button>
+                            <button className="btn-delete" type="button" onMouseDown={(e) => e.preventDefault()} onClick={cancelBatchFolderRename}>
+                              <X size={16} />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button className="btn-delete" type="button" onClick={() => startBatchFolderRename(folder)}>
+                              <Pencil size={16} />
+                            </button>
+                            <button className="btn-delete" type="button" onClick={() => downloadBatchResults(folder.id)} disabled={!folder.canDownload}>
+                              <Download size={16} />
+                            </button>
+                            <button className="btn-delete" type="button" onClick={() => removeBatchFolder(folder.id)}>
                               <Trash2 size={16} />
                             </button>
-                          </div>
-                        ))}
+                          </>
+                        )}
                       </div>
-                    )}
-
-                    <div className="progress">
-                      <div className="progress-fill" style={{ width: `${item.progress}%` }} />
                     </div>
 
-                    {item.results.length > 0 && (
-                      <div className="batch-results-grid">
-                        {item.results.slice(0, 4).map((asset) => (
-                          <div key={asset.id} className="batch-result-thumb">
-                            <img src={asset.url} alt={asset.label} />
+                    <div className="batch-folder-stats">
+                      <div className="detail-card compact">
+                        <span className="detail-label">Preset principal</span>
+                        <p>{folder.preset?.name || 'Non defini'}</p>
+                      </div>
+                      <div className="detail-card compact">
+                        <span className="detail-label">Stats</span>
+                        <p>{folder.stats.done} termines - {folder.stats.failed} erreurs</p>
+                      </div>
+                      <div className="detail-card compact">
+                        <span className="detail-label">Progression</span>
+                        <p>{folder.stats.running > 0 ? `${folder.stats.running} en cours` : `${folder.stats.launchable} a lancer`}</p>
+                      </div>
+                      <div className="detail-card compact">
+                        <span className="detail-label">Resultats</span>
+                        <p>{folder.stats.assets} asset{folder.stats.assets > 1 ? 's' : ''}</p>
+                      </div>
+                    </div>
+
+                    {!folder.collapsed && (
+                      <div className="batch-folder-body">
+                        <div className="batch-folder-toolbar">
+                          <label className="field">
+                            <span>Preset principal</span>
+                            <select value={folder.presetId || ''} onChange={(e) => updateBatchFolderPreset(folder.id, e.target.value)}>
+                              {presets.map((presetOption) => (
+                                <option key={presetOption.id} value={presetOption.id}>{presetOption.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="toolbar batch-folder-toolbar-actions">
+                            <button className="btn-secondary" onClick={() => openBatchFilePicker(folder.id)} disabled={batchItems.length >= MAX_BATCH_ITEMS}>
+                              <Plus size={16} />
+                              <span>Ajouter des produits</span>
+                            </button>
+                            <button className="btn-main batch-cta" onClick={() => startBatchGeneration(folder.id)} disabled={folder.stats.launchable === 0}>
+                              {folder.stats.running > 0
+                                ? <><span className="spinner" />Lancer les nouveaux ({folder.stats.launchable})</>
+                                : <><Sparkles size={18} />Generer la boutique</>}
+                            </button>
                           </div>
-                        ))}
+                        </div>
+
+                        {folder.items.length === 0 ? (
+                          <div className="preview-empty batch-folder-empty">
+                            <Layers3 size={24} />
+                            <p>Ajoute des produits dans cette boutique pour garder ses generations et ses resultats ensemble.</p>
+                          </div>
+                        ) : (
+                          <div className="batch-list">
+                            {folder.items.map((item, index) => {
+                              const preset = presets.find((entry) => entry.id === item.presetId) || null;
+                              return (
+                                <div key={item.id} className={`batch-card status-${item.status}`}>
+                                  <div className="batch-card-head">
+                                    <div>
+                                      <strong>{item.name}</strong>
+                                      <small>Produit {index + 1} - {preset?.name || 'Preset manquant'}</small>
+                                    </div>
+                                    <span className={`batch-badge status-${item.status}`}>{batchStatusLabel(item.status)}</span>
+                                  </div>
+
+                                  <div className="batch-card-body">
+                                    <div className="batch-thumb">
+                                      <img src={item.sourceImages[0]?.previewUrl} alt={item.name} />
+                                    </div>
+                                    <div className="batch-config">
+                                      <label className="field">
+                                        <span>Preset</span>
+                                        <select
+                                          value={item.presetId || ''}
+                                          onChange={(e) => updateBatchItemPreset(item.id, e.target.value)}
+                                          disabled={isBatchItemLocked(item.status)}
+                                        >
+                                          {presets.map((presetOption) => (
+                                            <option key={presetOption.id} value={presetOption.id}>{presetOption.name}</option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                      <div className="batch-meta-grid">
+                                        <div className="detail-card compact">
+                                          <span className="detail-label">Sources</span>
+                                          <p>{item.sourceImages.length} reference{item.sourceImages.length > 1 ? 's' : ''}</p>
+                                        </div>
+                                        <div className="detail-card compact">
+                                          <span className="detail-label">Variantes</span>
+                                          <p>{item.selectedVariantIds.length} par defaut</p>
+                                        </div>
+                                        <div className="detail-card compact">
+                                          <span className="detail-label">Progression</span>
+                                          <p>{Math.round(item.progress)}%</p>
+                                        </div>
+                                      </div>
+                                      <div className="toolbar batch-card-toolbar">
+                                        <button
+                                          className="btn-secondary"
+                                          onClick={() => openBatchSourcePicker(item.id)}
+                                          disabled={isBatchItemLocked(item.status)}
+                                        >
+                                          <Plus size={16} />
+                                          <span>Ajouter refs</span>
+                                        </button>
+                                      </div>
+                                      {item.currentVariantName && <p className="helper-text left">{item.currentVariantName}</p>}
+                                      {item.error && <p className="batch-error">{item.error}</p>}
+                                    </div>
+                                  </div>
+
+                                  {item.sourceImages.length > 0 && (
+                                    <div className="batch-sources-grid">
+                                      {item.sourceImages.map((image, imageIndex) => (
+                                        <div key={image.id} className="batch-source-thumb">
+                                          <img src={image.previewUrl} alt={image.name || `Reference ${imageIndex + 1}`} />
+                                          <div className="batch-source-meta">
+                                            <span>{imageIndex === 0 ? 'Vue principale' : `Ref ${imageIndex + 1}`}</span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="btn-delete preview-remove"
+                                            onClick={() => removeBatchSourceImage(item.id, image.id)}
+                                            disabled={isBatchItemLocked(item.status)}
+                                          >
+                                            <Trash2 size={16} />
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  <div className="progress">
+                                    <div className="progress-fill" style={{ width: `${item.progress}%` }} />
+                                  </div>
+
+                                  {item.results.length > 0 && (
+                                    <div className="batch-results-grid">
+                                      {item.results.slice(0, 4).map((asset) => (
+                                        <div key={asset.id} className="batch-result-thumb">
+                                          <img src={asset.url} alt={asset.label} />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  <div className="batch-actions">
+                                    <span className="subtle">{item.results.length} resultat{item.results.length > 1 ? 's' : ''}</span>
+                                    <button className="btn-delete" onClick={() => removeBatchItem(item.id)}>
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     )}
-
-                    <div className="batch-actions">
-                      <span className="subtle">{item.results.length} resultat{item.results.length > 1 ? 's' : ''}</span>
-                      <button className="btn-delete" onClick={() => removeBatchItem(item.id)}>
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
                   </div>
                 );
               })}
