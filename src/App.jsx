@@ -34,6 +34,7 @@ const MAX_BATCH_CONCURRENCY = 20;
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
+const LOCKED_PRESET_NAME = 'Universel editorial';
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -477,6 +478,11 @@ export default function App() {
     outputFormat: 'png',
   });
   const [resultsDownloading, setResultsDownloading] = useState(false);
+  const [mobileSaverOpen, setMobileSaverOpen] = useState(false);
+  const [mobileSaverTitle, setMobileSaverTitle] = useState('FLASH');
+  const [mobileSaverArchiveName, setMobileSaverArchiveName] = useState('flash-resultats.zip');
+  const [mobileSaverItems, setMobileSaverItems] = useState([]);
+  const [mobileSaverActiveFileId, setMobileSaverActiveFileId] = useState(null);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
   const [cameraActive, setCameraActive] = useState(false);
@@ -652,7 +658,9 @@ export default function App() {
         throw new Error(data.error || 'Impossible de charger les presets');
       }
 
-      const nextPresets = Array.isArray(data) ? data.map(normalizePreset) : [];
+      const allPresets = Array.isArray(data) ? data.map(normalizePreset) : [];
+      const lockedPreset = allPresets.find((preset) => preset?.name?.toLowerCase().includes(LOCKED_PRESET_NAME.toLowerCase())) || null;
+      const nextPresets = lockedPreset ? [lockedPreset] : allPresets;
       setPresets(nextPresets);
       setSelectedPresetId((currentId) => {
         if (currentId && nextPresets.some((preset) => preset.id === currentId)) {
@@ -1126,6 +1134,18 @@ export default function App() {
       })),
     })), []);
 
+  const closeMobileSaver = useCallback(() => {
+    setMobileSaverOpen(false);
+    setMobileSaverActiveFileId(null);
+  }, []);
+
+  const openMobileSaver = useCallback(({ items, title, archiveName }) => {
+    setMobileSaverTitle(title || 'FLASH');
+    setMobileSaverArchiveName(archiveName || 'flash-resultats.zip');
+    setMobileSaverItems(items);
+    setMobileSaverOpen(true);
+  }, []);
+
   const saveCollections = useCallback(async ({ collections, archiveName, title }) => {
     const items = buildBundleItems(collections);
     if (items.length === 0) {
@@ -1133,24 +1153,55 @@ export default function App() {
     }
 
     if (prefersDirectMobileSave) {
-      const files = await Promise.all(items.flatMap((item) => item.files.map((file) => fetchAssetFile({
-        url: file.url,
-        fileName: items.length > 1 ? `${item.folderName}-${file.fileName}` : file.fileName,
-      }))));
-
-      const shared = await shareFiles(files, title || 'FLASH');
-      if (shared) {
+      const totalFiles = items.reduce((sum, item) => sum + item.files.length, 0);
+      if (totalFiles > 1) {
+        openMobileSaver({ items, title, archiveName });
         return;
       }
 
-      for (const file of files) {
-        await saveBlob(file, file.name);
+      const single = items.flatMap((item) => item.files.map((file) => ({
+        folderName: item.folderName,
+        file,
+      })))[0];
+
+      if (!single) {
+        throw new Error('Aucun asset a enregistrer');
       }
+
+      const resolvedName = items.length > 1 ? `${single.folderName}-${single.file.fileName}` : single.file.fileName;
+      const downloaded = await fetchAssetFile({ url: single.file.url, fileName: resolvedName });
+      await saveBlob(downloaded, downloaded.name);
       return;
     }
 
     await requestBundleDownload({ items, archiveName });
-  }, [buildBundleItems, fetchAssetFile, prefersDirectMobileSave, requestBundleDownload]);
+  }, [buildBundleItems, fetchAssetFile, openMobileSaver, prefersDirectMobileSave, requestBundleDownload]);
+
+  const downloadMobileSaverFile = useCallback(async (file) => {
+    if (!file?.url || !file?.fileName) return;
+
+    try {
+      setMobileSaverActiveFileId(file.id);
+      setError(null);
+      const downloaded = await fetchAssetFile({ url: file.url, fileName: file.fileName });
+      await saveBlob(downloaded, downloaded.name);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setMobileSaverActiveFileId(null);
+    }
+  }, [fetchAssetFile]);
+
+  const downloadMobileSaverZip = useCallback(async () => {
+    if (!mobileSaverItems.length) return;
+    try {
+      setError(null);
+      await requestBundleDownload({ items: mobileSaverItems, archiveName: mobileSaverArchiveName });
+      closeMobileSaver();
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [closeMobileSaver, mobileSaverArchiveName, mobileSaverItems, requestBundleDownload]);
 
   const downloadSingleResult = useCallback(async (asset, fileName) => {
     try {
@@ -2047,25 +2098,9 @@ export default function App() {
           </div>
 
           <div className="toolbar">
-            <button className="btn-secondary" onClick={startNewPreset}>
-              <Plus size={16} />
-              <span>Nouveau</span>
-            </button>
-            <button className="btn-secondary" onClick={startEditPreset} disabled={!selectedPreset || Boolean(editingPreset)}>
-              <Pencil size={16} />
-              <span>Modifier</span>
-            </button>
-            <button className="btn-secondary" onClick={duplicatePreset} disabled={!selectedPreset}>
-              <Copy size={16} />
-              <span>Dupliquer</span>
-            </button>
             <button className="btn-secondary" onClick={() => setStep('batch')} disabled={Boolean(editingPreset)}>
               <Layers3 size={16} />
               <span>Mode batch</span>
-            </button>
-            <button className="btn-secondary danger" onClick={removePreset} disabled={!selectedPreset || Boolean(editingPreset)}>
-              <Trash2 size={16} />
-              <span>Supprimer</span>
             </button>
           </div>
 
@@ -2684,6 +2719,53 @@ export default function App() {
       <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFileUpload} hidden />
       <input ref={batchFileRef} type="file" accept="image/*" multiple onChange={handleBatchFileUpload} hidden />
       <input ref={batchSourceFileRef} type="file" accept="image/*" multiple onChange={handleBatchSourceUpload} hidden />
+
+      {mobileSaverOpen && (
+        <div className="mobile-saver-overlay" onClick={closeMobileSaver}>
+          <div className="mobile-saver-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="mobile-saver-head">
+              <div className="mobile-saver-title">
+                <strong>{mobileSaverTitle || 'FLASH'}</strong>
+                <small>Sauvegarde mobile : touche une image pour ouvrir le menu et choisir “Enregistrer l image”.</small>
+              </div>
+              <button className="btn-delete" type="button" onClick={closeMobileSaver}>
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="toolbar mobile-saver-toolbar">
+              <button className="btn-secondary" type="button" onClick={downloadMobileSaverZip}>
+                <Download size={16} />
+                <span>Tout en ZIP</span>
+              </button>
+            </div>
+
+            <div className="mobile-saver-grid">
+              {mobileSaverItems.flatMap((item) => item.files.map((file, index) => {
+                const id = `${item.folderName}-${file.fileName}-${index}`;
+                const mergedName = mobileSaverItems.length > 1 ? `${item.folderName}-${file.fileName}` : file.fileName;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className="mobile-saver-item"
+                    onClick={() => downloadMobileSaverFile({ id, url: file.url, fileName: mergedName })}
+                    disabled={mobileSaverActiveFileId === id}
+                  >
+                    <div className="mobile-saver-thumb">
+                      <img src={file.url} alt={file.fileName} />
+                    </div>
+                    <div className="mobile-saver-meta">
+                      <span>{file.fileName}</span>
+                      {mobileSaverActiveFileId === id && <small>Preparation...</small>}
+                    </div>
+                  </button>
+                );
+              }))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

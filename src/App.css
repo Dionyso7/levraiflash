@@ -1148,6 +1148,117 @@
   display: block;
 }
 
+/* ── Mobile saver ── */
+.mobile-saver-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+}
+
+.mobile-saver-sheet {
+  width: 100%;
+  max-width: 520px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(80dvh, 640px);
+  overflow: auto;
+}
+
+.mobile-saver-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mobile-saver-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mobile-saver-title strong {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.mobile-saver-title small {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.35;
+}
+
+.mobile-saver-toolbar {
+  justify-content: flex-start;
+}
+
+.mobile-saver-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mobile-saver-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mobile-saver-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mobile-saver-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.mobile-saver-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mobile-saver-meta span {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-saver-meta small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text2);
+}
+
 /* ── History ── */
 .empty-msg {
   color: var(--text2);
@@ -1266,6 +1377,10 @@
 
   .batch-cta {
     width: 100%;
+  }
+
+  .mobile-saver-grid {
+    grid-template-columns: 1fr;
   }
 }
 
