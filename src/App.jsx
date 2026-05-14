@@ -392,6 +392,24 @@ function getFileNameFromDisposition(disposition, fallback) {
   return match?.[1] || fallback;
 }
 
+async function readJsonResponse(res) {
+  const text = await res.text();
+  const trimmed = text.trim();
+
+  try {
+    return trimmed ? JSON.parse(trimmed) : null;
+  } catch {
+    if (/^<!doctype/i.test(trimmed) || /^<html/i.test(trimmed)) {
+      const hint = typeof window !== 'undefined'
+        ? `Tu es probablement sur le port Vite (${window.location.host}). En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`
+        : `En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`;
+      throw new Error(`API indisponible ou mauvaise URL. ${hint}`);
+    }
+
+    throw new Error('Reponse JSON invalide');
+  }
+}
+
 async function saveBlob(blob, fileName) {
   if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
     try {
@@ -579,7 +597,7 @@ export default function App() {
   const loadHistory = useCallback(async () => {
     try {
       const res = await fetch(`${API}/history?clientId=${encodeURIComponent(clientIdRef.current)}`);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
 
       if (!res.ok) {
         throw new Error(data.error || "Impossible de charger l'historique");
@@ -652,7 +670,7 @@ export default function App() {
     setLoadingPresets(true);
     try {
       const res = await fetch(`${API}/presets?clientId=${encodeURIComponent(clientIdRef.current)}`);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
 
       if (!res.ok) {
         throw new Error(data.error || 'Impossible de charger les presets');
@@ -1023,7 +1041,7 @@ export default function App() {
         entry,
       }),
     });
-    const data = await res.json();
+    const data = await readJsonResponse(res);
 
     if (!res.ok) {
       throw new Error(data.error || "Impossible d'enregistrer l'historique");
@@ -1048,7 +1066,7 @@ export default function App() {
 
       try {
         const res = await fetch(`${API}/status?taskId=${encodeURIComponent(taskId)}`);
-        const data = await res.json();
+        const data = await readJsonResponse(res);
 
         if (!res.ok) {
           throw new Error(data.error || 'Erreur de generation');
@@ -1116,6 +1134,10 @@ export default function App() {
     const res = await fetch(`${API}/download-asset?${params.toString()}`);
 
     if (!res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error(`API indisponible. En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`);
+      }
       const data = await res.json().catch(() => null);
       throw new Error(data?.error || `Impossible de recuperer ${fileName}`);
     }
@@ -1325,7 +1347,7 @@ export default function App() {
               referenceImageUrls: [masterImageUrl],
             }),
           });
-          const data = await res.json();
+          const data = await readJsonResponse(res);
 
           if (!res.ok || data.error) {
             throw new Error(data.error || `Erreur sur ${variant.name}`);
@@ -1755,7 +1777,7 @@ export default function App() {
         clientId: clientIdRef.current,
       });
       const res = await fetch(`${API}/history?${params.toString()}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
 
       if (!res.ok || data.error) {
         throw new Error(data.error || "Impossible de supprimer l'historique");
@@ -1779,7 +1801,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preset: editingPreset }),
       });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
 
       if (!res.ok) {
         throw new Error(data.error || 'Impossible de sauvegarder le preset');
@@ -1836,7 +1858,7 @@ export default function App() {
         presetId: selectedPreset.id,
       });
       const res = await fetch(`${API}/presets?${params.toString()}`, { method: 'DELETE' });
-      const data = await res.json();
+      const data = await readJsonResponse(res);
 
       if (!res.ok) {
         throw new Error(data.error || 'Impossible de supprimer le preset');
