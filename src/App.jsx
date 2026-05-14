@@ -289,6 +289,19 @@ function isLikelyMobileDevice() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
 }
 
+function isAppleMobileDevice() {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(userAgent)) {
+    return true;
+  }
+
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+}
+
 function serializeBatchState({ folders, items }) {
   return {
     folders: folders.map((folder) => ({
@@ -498,7 +511,6 @@ export default function App() {
   const [resultsDownloading, setResultsDownloading] = useState(false);
   const [mobileSaverOpen, setMobileSaverOpen] = useState(false);
   const [mobileSaverTitle, setMobileSaverTitle] = useState('FLASH');
-  const [mobileSaverArchiveName, setMobileSaverArchiveName] = useState('flash-resultats.zip');
   const [mobileSaverItems, setMobileSaverItems] = useState([]);
   const [mobileSaverActiveFileId, setMobileSaverActiveFileId] = useState(null);
   const [error, setError] = useState(null);
@@ -546,14 +558,25 @@ export default function App() {
       summary.assets += item.results.length;
       if (item.status === 'done') summary.done += 1;
       else if (item.status === 'failed') summary.failed += 1;
-      else if (['draft', 'pending'].includes(item.status)) summary.pending += 1;
       else summary.running += 1;
     });
 
     return summary;
   }, [batchFolders.length, batchItems]);
   const prefersDirectMobileSave = useMemo(
-    () => isLikelyMobileDevice(),
+    () => {
+      if (typeof navigator === 'undefined') {
+        return false;
+      }
+
+      const supportsShare = typeof navigator.share === 'function';
+      const touchHeuristic = typeof window !== 'undefined'
+        && 'ontouchstart' in window
+        && typeof window.innerWidth === 'number'
+        && window.innerWidth < 980;
+
+      return isAppleMobileDevice() || isLikelyMobileDevice() || supportsShare || touchHeuristic;
+    },
     [],
   );
   const canDownloadResults = useMemo(
@@ -1163,7 +1186,6 @@ export default function App() {
 
   const openMobileSaver = useCallback(({ items, title, archiveName }) => {
     setMobileSaverTitle(title || 'FLASH');
-    setMobileSaverArchiveName(archiveName || 'flash-resultats.zip');
     setMobileSaverItems(items);
     setMobileSaverOpen(true);
   }, []);
@@ -1214,16 +1236,35 @@ export default function App() {
     }
   }, [fetchAssetFile]);
 
-  const downloadMobileSaverZip = useCallback(async () => {
+  const shareMobileSaverAll = useCallback(async () => {
     if (!mobileSaverItems.length) return;
+
     try {
+      setMobileSaverActiveFileId('__all__');
       setError(null);
-      await requestBundleDownload({ items: mobileSaverItems, archiveName: mobileSaverArchiveName });
+
+      const files = await Promise.all(mobileSaverItems.flatMap((item) => item.files.map((file) => fetchAssetFile({
+        url: file.url,
+        fileName: mobileSaverItems.length > 1 ? `${item.folderName}-${file.fileName}` : file.fileName,
+      }))));
+
+      const shared = await shareFiles(files, mobileSaverTitle || 'FLASH');
+      if (shared) {
+        closeMobileSaver();
+        return;
+      }
+
+      for (const file of files) {
+        await saveBlob(file, file.name);
+      }
+
       closeMobileSaver();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setMobileSaverActiveFileId(null);
     }
-  }, [closeMobileSaver, mobileSaverArchiveName, mobileSaverItems, requestBundleDownload]);
+  }, [fetchAssetFile, mobileSaverItems, mobileSaverTitle, closeMobileSaver]);
 
   const downloadSingleResult = useCallback(async (asset, fileName) => {
     try {
@@ -2756,9 +2797,9 @@ export default function App() {
             </div>
 
             <div className="toolbar mobile-saver-toolbar">
-              <button className="btn-secondary" type="button" onClick={downloadMobileSaverZip}>
-                <Download size={16} />
-                <span>Tout en ZIP</span>
+              <button className="btn-secondary" type="button" onClick={shareMobileSaverAll} disabled={mobileSaverActiveFileId === '__all__'}>
+                <Share size={16} />
+                <span>{mobileSaverActiveFileId === '__all__' ? 'Preparation...' : 'Partager tout'}</span>
               </button>
             </div>
 
