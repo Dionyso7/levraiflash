@@ -26,6 +26,7 @@ import {
   Layers3,
 } from 'lucide-react';
 import './App.css';
+import { LOCAL_DEFAULT_PRESETS } from './defaultPresets';
 
 const API = '/api';
 const CLIENT_ID_KEY = 'flash_client_id';
@@ -34,7 +35,7 @@ const MAX_BATCH_CONCURRENCY = 20;
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
-const LOCKED_PRESET_NAME = 'Universel editorial';
+const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit']);
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -44,6 +45,12 @@ const THEME_META = {
   outdoor: { icon: TreePine, color: '#10B981', label: 'Outdoor' },
   custom: { icon: Sparkles, color: '#6B7280', label: 'Custom' },
 };
+
+function getVisibleFallbackPresets() {
+  return LOCAL_DEFAULT_PRESETS
+    .filter((preset) => VISIBLE_DEFAULT_PRESET_NAMES.has(preset?.name))
+    .map((preset) => normalizePreset(preset));
+}
 
 function toBase64(file) {
   return new Promise((res, rej) => {
@@ -408,18 +415,22 @@ function getFileNameFromDisposition(disposition, fallback) {
 async function readJsonResponse(res) {
   const text = await res.text();
   const trimmed = text.trim();
+  const devHint = typeof window !== 'undefined'
+    ? ` Tu es probablement sur le port Vite (${window.location.host}). En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`
+    : ' En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l\'URL Netlify Dev).';
 
   try {
     return trimmed ? JSON.parse(trimmed) : null;
   } catch {
     if (/^<!doctype/i.test(trimmed) || /^<html/i.test(trimmed)) {
-      const hint = typeof window !== 'undefined'
-        ? `Tu es probablement sur le port Vite (${window.location.host}). En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`
-        : `En dev, lance "npm run dev" et ouvre http://localhost:8891/ (ou l'URL Netlify Dev).`;
-      throw new Error(`API indisponible ou mauvaise URL. ${hint}`);
+      throw new Error(`API indisponible ou mauvaise URL.${devHint}`);
     }
 
-    throw new Error('Reponse JSON invalide');
+    const snippet = trimmed.slice(0, 120).replace(/\s+/g, ' ');
+    const nonJsonHint = /^SyntaxError[:\s]/i.test(trimmed) || /^Cannot\s/i.test(trimmed) || /^Error[:\s]/i.test(trimmed)
+      ? devHint
+      : '';
+    throw new Error(`Reponse API non JSON: ${snippet || 'contenu vide'}.${nonJsonHint}`);
   }
 }
 
@@ -623,7 +634,7 @@ export default function App() {
       const data = await readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || "Impossible de charger l'historique");
+        throw new Error(data?.error || "Impossible de charger l'historique");
       }
 
       setHistory(Array.isArray(data) ? data : []);
@@ -696,12 +707,14 @@ export default function App() {
       const data = await readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || 'Impossible de charger les presets');
+        throw new Error(data?.error || 'Impossible de charger les presets');
       }
 
       const allPresets = Array.isArray(data) ? data.map(normalizePreset) : [];
-      const lockedPreset = allPresets.find((preset) => preset?.name?.toLowerCase().includes(LOCKED_PRESET_NAME.toLowerCase())) || null;
-      const nextPresets = lockedPreset ? [lockedPreset] : allPresets;
+      const curatedPresets = allPresets.filter((preset) => VISIBLE_DEFAULT_PRESET_NAMES.has(preset?.name));
+      const nextPresets = curatedPresets.length > 0
+        ? curatedPresets
+        : (allPresets.length > 0 ? allPresets : getVisibleFallbackPresets());
       setPresets(nextPresets);
       setSelectedPresetId((currentId) => {
         if (currentId && nextPresets.some((preset) => preset.id === currentId)) {
@@ -711,8 +724,21 @@ export default function App() {
         return nextPresets[0]?.id || null;
       });
     } catch (err) {
-      setError(err.message);
-      setPresets([]);
+      const fallbackPresets = getVisibleFallbackPresets();
+      if (fallbackPresets.length > 0) {
+        setError(null);
+        setPresets(fallbackPresets);
+        setSelectedPresetId((currentId) => {
+          if (currentId && fallbackPresets.some((preset) => preset.id === currentId)) {
+            return currentId;
+          }
+
+          return fallbackPresets[0]?.id || null;
+        });
+      } else {
+        setError(err.message);
+        setPresets([]);
+      }
     } finally {
       setLoadingPresets(false);
     }
@@ -1067,7 +1093,7 @@ export default function App() {
     const data = await readJsonResponse(res);
 
     if (!res.ok) {
-      throw new Error(data.error || "Impossible d'enregistrer l'historique");
+      throw new Error(data?.error || "Impossible d'enregistrer l'historique");
     }
 
     return data;
@@ -1092,7 +1118,7 @@ export default function App() {
         const data = await readJsonResponse(res);
 
         if (!res.ok) {
-          throw new Error(data.error || 'Erreur de generation');
+          throw new Error(data?.error || 'Erreur de generation');
         }
 
         if (data.status === 'done') {
@@ -1312,10 +1338,10 @@ export default function App() {
           uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
         }),
       });
-      const uploadData = await uploadRes.json();
+      const uploadData = await readJsonResponse(uploadRes);
 
-      if (!uploadRes.ok || uploadData.error || !uploadData.sourceImageUrl) {
-        throw new Error(uploadData.error || `Erreur d'upload sur la reference ${index + 1}`);
+      if (!uploadRes.ok || uploadData?.error || !uploadData?.sourceImageUrl) {
+        throw new Error(uploadData?.error || `Erreur d'upload sur la reference ${index + 1}`);
       }
 
       return uploadData.sourceImageUrl;
@@ -1341,9 +1367,9 @@ export default function App() {
       }),
     });
 
-    const masterData = await masterRes.json();
-    if (!masterRes.ok || masterData.error) {
-      throw new Error(masterData.error || 'Erreur de generation du master');
+    const masterData = await readJsonResponse(masterRes);
+    if (!masterRes.ok || masterData?.error) {
+      throw new Error(masterData?.error || 'Erreur de generation du master');
     }
 
     const masterUrls = await pollTask(masterData.taskId, {
@@ -1390,8 +1416,8 @@ export default function App() {
           });
           const data = await readJsonResponse(res);
 
-          if (!res.ok || data.error) {
-            throw new Error(data.error || `Erreur sur ${variant.name}`);
+          if (!res.ok || data?.error) {
+            throw new Error(data?.error || `Erreur sur ${variant.name}`);
           }
 
           const urls = await pollTask(data.taskId, {
@@ -1820,8 +1846,8 @@ export default function App() {
       const res = await fetch(`${API}/history?${params.toString()}`, { method: 'DELETE' });
       const data = await readJsonResponse(res);
 
-      if (!res.ok || data.error) {
-        throw new Error(data.error || "Impossible de supprimer l'historique");
+      if (!res.ok || data?.error) {
+        throw new Error(data?.error || "Impossible de supprimer l'historique");
       }
 
       await loadHistory();
@@ -1845,7 +1871,7 @@ export default function App() {
       const data = await readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || 'Impossible de sauvegarder le preset');
+        throw new Error(data?.error || 'Impossible de sauvegarder le preset');
       }
 
       const savedPreset = normalizePreset(data);
@@ -1902,7 +1928,7 @@ export default function App() {
       const data = await readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || 'Impossible de supprimer le preset');
+        throw new Error(data?.error || 'Impossible de supprimer le preset');
       }
 
       const nextPresets = presets.filter((preset) => preset.id !== selectedPreset.id);

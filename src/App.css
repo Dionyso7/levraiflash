@@ -474,6 +474,15 @@
   font-family: inherit;
 }
 
+.field select {
+  color-scheme: dark;
+}
+
+.field select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 .field textarea {
   resize: vertical;
 }
