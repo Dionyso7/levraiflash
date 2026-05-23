@@ -35,7 +35,7 @@ const MAX_BATCH_CONCURRENCY = 20;
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
-const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'MAMADOU']);
+const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'CBD France', 'MAMADOU']);
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -45,6 +45,54 @@ const THEME_META = {
   outdoor: { icon: TreePine, color: '#10B981', label: 'Outdoor' },
   custom: { icon: Sparkles, color: '#6B7280', label: 'Custom' },
 };
+
+function isCbdFrancePreset(preset) {
+  if (!preset) return false;
+  if (preset?.key === 'cbd-france') return true;
+  if (typeof preset?.id === 'string' && preset.id.endsWith('_cbd-france')) return true;
+  const name = String(preset?.name || '').toLowerCase();
+  return name.includes('cbd') && name.includes('france');
+}
+
+function normalizeTerpeneProfile(profile) {
+  return String(profile || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\S\r\n]+/g, ' ')
+    .slice(0, 1200);
+}
+
+function extractAromaCuesFromProfile(profile) {
+  const text = normalizeTerpeneProfile(profile).toLowerCase();
+  if (!text) return [];
+
+  const cues = new Set();
+  const add = (value) => {
+    if (typeof value !== 'string') return;
+    const cleaned = value.trim();
+    if (cleaned) cues.add(cleaned);
+  };
+
+  const has = (needle) => text.includes(needle);
+
+  if (has('limonene') || has('limonène') || has('citrus') || has('citron') || has('orange') || has('mandarine') || has('pamplemousse')) add('citrus peel');
+  if (has('pinene') || has('pinène') || has('pine') || has('pin ')) add('pine needles');
+  if (has('myrcene') || has('myrcène') || has('mangue') || has('mango') || has('tropical')) add('tropical fruit');
+  if (has('linalool') || has('lavande') || has('lavender') || has('floral') || has('fleur')) add('lavender florals');
+  if (has('caryophyllene') || has('caryophyllène') || has('poivre') || has('pepper') || has('epice') || has('spicy')) add('peppercorn');
+  if (has('humulene') || has('humulène') || has('houblon') || has('hops') || has('bois') || has('wood') || has('cedre') || has('cèdre')) add('noble wood');
+  if (has('terre') || has('earth') || has('soil') || has('musk') || has('musque') || has('mousse')) add('soil');
+  if (has('fruits rouges') || has('framboise') || has('fraise') || has('cerise') || has('berry') || has('berries')) add('red berries');
+
+  return Array.from(cues).slice(0, 4);
+}
+
+function buildTerpeneCustomPrompt(profile) {
+  const cleaned = normalizeTerpeneProfile(profile);
+  if (!cleaned) return '';
+  const shortProfile = cleaned.slice(0, 380);
+  return `Aromatic profile (authoritative, used to define the editorial universe for this image): ${shortProfile}.`;
+}
 
 function getVisibleFallbackPresets() {
   return LOCAL_DEFAULT_PRESETS
@@ -271,6 +319,7 @@ function createBatchItem(file, previewUrl, preset, preferredVariantIds = [], ove
     sourceImages: [createSourceImage(file, previewUrl)],
     presetId: preset?.id || null,
     selectedVariantIds: validVariantIds.length ? validVariantIds : defaultSelectedVariantIds(preset),
+    terpeneProfile: overrides.terpeneProfile || '',
     status: 'draft',
     progress: 0,
     currentVariantName: '',
@@ -323,6 +372,7 @@ function serializeBatchState({ folders, items }) {
       folderId: item.folderId ?? null,
       presetId: item.presetId ?? null,
       selectedVariantIds: Array.isArray(item.selectedVariantIds) ? item.selectedVariantIds : [],
+      terpeneProfile: item.terpeneProfile || '',
       status: item.status,
       progress: item.progress,
       currentVariantName: item.currentVariantName,
@@ -512,6 +562,7 @@ export default function App() {
   const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedVariantIds, setSelectedVariantIds] = useState([]);
+  const [terpeneProfile, setTerpeneProfile] = useState('');
   const [generating, setGenerating] = useState(false);
   const [results, setResults] = useState([]);
   const [resultsMeta, setResultsMeta] = useState({
@@ -656,6 +707,7 @@ export default function App() {
     setGenerating(false);
     setCurrentVariantName('');
     setShowHistory(false);
+    setTerpeneProfile('');
   }, []);
 
   const rememberPreviewUrl = useCallback((previewUrl) => {
@@ -801,6 +853,7 @@ export default function App() {
               sourceImages: hydratedSources,
               presetId: item?.presetId || null,
               selectedVariantIds: Array.isArray(item?.selectedVariantIds) ? item.selectedVariantIds : [],
+              terpeneProfile: typeof item?.terpeneProfile === 'string' ? item.terpeneProfile : '',
               status: safeStatus,
               progress: safeStatus === 'done' ? 100 : 0,
               currentVariantName: safeStatus === 'done' ? (item?.currentVariantName || 'Generation terminee') : '',
@@ -841,6 +894,13 @@ export default function App() {
       return kept.length ? kept : defaultSelectedVariantIds(selectedPreset);
     });
   }, [selectedPreset, editingPreset]);
+
+  useEffect(() => {
+    if (editingPreset) return;
+    if (!isCbdFrancePreset(selectedPreset)) {
+      setTerpeneProfile('');
+    }
+  }, [editingPreset, selectedPreset]);
 
   useEffect(() => {
     if (!batchStateReady || presets.length === 0) return;
@@ -1309,6 +1369,7 @@ export default function App() {
     sourceImages: jobSourceImages,
     preset,
     selectedVariantIds: jobSelectedVariantIds,
+    customPrompt,
     shouldAbort,
     onStageChange,
     onProgress,
@@ -1364,6 +1425,7 @@ export default function App() {
         preset,
         variant: { ...masterVariant, sourceMode: 'source' },
         inputImageUrls: sourceUploads,
+        customPrompt: customPrompt || undefined,
       }),
     });
 
@@ -1412,6 +1474,7 @@ export default function App() {
               preset,
               variant: { ...variant, sourceMode: 'master' },
               referenceImageUrls: [masterImageUrl],
+              customPrompt: customPrompt || undefined,
             }),
           });
           const data = await readJsonResponse(res);
@@ -1488,10 +1551,12 @@ export default function App() {
     setCurrentVariantName('');
 
     try {
+      const customPrompt = isCbdFrancePreset(selectedPreset) ? buildTerpeneCustomPrompt(terpeneProfile) : '';
       const { assets } = await runGenerationJob({
         sourceImages,
         preset: selectedPreset,
         selectedVariantIds,
+        customPrompt,
         shouldAbort: () => activeGenerationRef.current !== runId,
         onStageChange: ({ currentVariantName: nextVariantName }) => {
           setCurrentVariantName(nextVariantName || '');
@@ -1605,6 +1670,7 @@ export default function App() {
     updateBatchItemState(itemId, {
       presetId,
       selectedVariantIds: defaultSelectedVariantIds(preset),
+      terpeneProfile: '',
       error: null,
       results: [],
       progress: 0,
@@ -1634,6 +1700,7 @@ export default function App() {
         sourceImages: item.sourceImages,
         preset,
         selectedVariantIds: item.selectedVariantIds,
+        customPrompt: isCbdFrancePreset(preset) ? buildTerpeneCustomPrompt(item.terpeneProfile) : '',
         shouldAbort: () => (
           activeBatchRunRef.current !== runId
           || ignoredBatchItemsRef.current.has(item.id)
@@ -2469,6 +2536,21 @@ export default function App() {
                 })}
               </div>
 
+              {!editingPreset && isCbdFrancePreset(selectedPreset) && (
+                <>
+                  <label className="field">
+                    <span>Profil terpénique (optionnel)</span>
+                    <textarea
+                      rows={4}
+                      value={terpeneProfile}
+                      onChange={(e) => setTerpeneProfile(e.target.value)}
+                      placeholder="Colle ici le profil terpénique (ex: Limonène 0.6%, Myrcène 0.3%, Pinène 0.2%...)"
+                    />
+                  </label>
+                  <p className="helper-text left">Le texte est injecté dans la génération pour adapter l'univers visuel (couleurs, matières, props) à la variété, sans modifier le produit.</p>
+                </>
+              )}
+
               <div className="toolbar">
                 <button className="btn-secondary" onClick={() => setStep('batch')}>
                   <Layers3 size={16} />
@@ -2699,6 +2781,18 @@ export default function App() {
                                           <p>{Math.round(item.progress)}%</p>
                                         </div>
                                       </div>
+                                      {isCbdFrancePreset(preset) && (
+                                        <label className="field">
+                                          <span>Profil terpénique (optionnel)</span>
+                                          <textarea
+                                            rows={3}
+                                            value={item.terpeneProfile || ''}
+                                            onChange={(e) => updateBatchItemState(item.id, { terpeneProfile: e.target.value })}
+                                            placeholder="Colle le profil terpénique pour guider l'univers visuel"
+                                            disabled={isBatchItemLocked(item.status)}
+                                          />
+                                        </label>
+                                      )}
                                       <div className="toolbar batch-card-toolbar">
                                         <button
                                           className="btn-secondary"

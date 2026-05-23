@@ -34,9 +34,13 @@ export const handler = async (event) => {
       return json(400, { error: 'Preset invalide' });
     }
 
+    const safeCustomPrompt = typeof customPrompt === 'string'
+      ? customPrompt.trim().replace(/\s+/g, ' ').slice(0, 380)
+      : '';
+
     const prompt = [
       variant?.promptOverride || [preset.basePrompt, variant?.promptAddon].filter(Boolean).join(', '),
-      customPrompt,
+      safeCustomPrompt,
       (variant?.negativePrompt || preset?.negativePrompt) ? `Avoid: ${variant?.negativePrompt || preset?.negativePrompt}` : null,
     ].filter(Boolean).join(', ');
 
