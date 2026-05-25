@@ -454,6 +454,40 @@ export const DEFAULT_PRESET_TEMPLATES = [
     ],
   },
   {
+    key: 'basique',
+    name: 'BASIQUE',
+    description: 'Preset basique en 2 plans : hero lancement (MAMADOU plan-02) + editorial overlay.',
+    theme: 'premium',
+    basePrompt: 'The exact same product as in the reference image, with identical shape, identical design, identical colors, identical text and markings fully preserved - do not alter or hallucinate any part of the product. The product placed in a styled flat lay composition on a surface that matches the natural world of this product. Identify what this product is, who uses it, and in what context - then choose surrounding props, materials, textures and atmosphere that are authentically coherent with that world. Props should feel like they naturally coexist with this product in real life. Soft directional natural light, clean composition with breathing space between elements, no hands, no text added, no branding on props, lifestyle editorial photography, photorealistic',
+    negativePrompt: 'hands, fingers, face, person, watermark, text added, branding on props, different product, altered shape, altered design, wrong colors, altered label, invented text, hallucinated markings, support structure, cluttered composition',
+    aspectRatio: '4:5',
+    resolution: '1K',
+    outputFormat: 'png',
+    variants: [
+      {
+        key: 'plan-01',
+        name: 'Hero lancement',
+        promptAddon: 'Plan maitre. Le produit est la star, l univers entier se construit autour de lui.',
+        promptOverride: 'The exact same dish as in the reference image, with identical ingredients, identical colors, identical textures and the same food content fully preserved - do not alter or hallucinate any part of the dish itself. Present the dish plated on a clean ceramic plate or bowl: do not show the original barquette, plastic tray, takeout container or any disposable packaging from the source photo. Create a premium launch still life with the plated dish as the undisputed hero. Build a restrained editorial composition around it using only a few coherent support elements derived from its world: one sculptural base, stone block, wood board or textured support, plus two to four secondary accents such as ingredients, garnishes, cutlery, glassware or serving cues. The composition must feel highly art directed and spacious, not crowded: portrait framing, the plated dish occupying roughly one quarter to one third of the frame height, positioned centrally or slightly lower-center, with generous negative space above and around it. Keep the dish the largest, sharpest and most readable element. Supporting objects must feel intentional, balanced and premium, often grouped tightly around the base rather than scattered across the frame. Favor tonal backgrounds, muted but rich color harmony, tactile materials, crisp studio light, clean shadow control and a believable grounded set. No added text, no branding on props, photorealistic.',
+        negativePrompt: 'different dish, altered ingredients, wrong colors, wrong textures, plastic tray, barquette, takeout container, disposable packaging, food packaging, clamshell container, meal prep container, cluttered scene, too many props, scattered props, generic props, irrelevant decor, centered catalog shot, dish too small, dish hidden, competing hero object, cheap styling, supermarket look, face, full person, crowd, watermark',
+        aspectRatio: '4:5',
+        enabledByDefault: true,
+        sourceMode: 'master',
+      },
+      {
+        key: 'plan-02',
+        name: 'Campagne epuree avec texte',
+        promptAddon: 'Image stylisee et suffisamment degagee pour ajouter un overlay texte.',
+        promptOverride: 'The exact same product as in the reference image, with identical shape, identical proportions, identical design, identical colors, identical materials, identical packaging details, identical text and markings fully preserved and legible - do not alter or hallucinate any part of the product. Create one polished editorial campaign visual with intentional copy space. Infer the ideal premium universe from the product itself, then stage it in a minimal but expressive decor that feels custom to that category. Follow the composition logic of the provided references: keep the hero anchored in the lower half, often on a pedestal, block, tray, tabletop or grounded surface; let the product and supporting styled use occupy roughly one quarter to one third of the frame; and preserve a large calm area in the upper third to upper half, or along one side, with smooth background texture suitable for text overlay. The set should feel stylized rather than generic: one dominant color family, controlled sculptural props, elegant material surfaces, and only a few supporting elements that clarify the universe without clutter. If the product is a bottle, drink, edible item, fragrance or similar lifestyle object, you may include one coherent styled serving, glass, garnish, ingredient or usage cue, but the actual product must stay visible, readable and premium. Lighting should be directional and graphic yet refined, with shadows used to add depth while keeping the text zone clean and usable. Photorealistic, campaign-ready, elevated and spacious.',
+        negativePrompt: 'different product, altered shape, altered proportions, altered design, wrong colors, wrong materials, altered label, altered packaging, invented text, hallucinated markings, busy layout, clutter, too many props, product filling the whole frame, product too small, no copy space, blocked text zone, noisy background, centered packshot, flat composition, cheap materials, face, full person, crowd, watermark',
+        aspectRatio: '4:5',
+        enabledByDefault: true,
+        isMaster: true,
+        sourceMode: 'source',
+      },
+    ],
+  },
+  {
     key: 'joaillerie-desir',
     name: 'Joaillerie desir',
     description: "Famille joaillerie en 4 plans : comprehension, preuve de qualite, projection portee et desir d'offrir.",
@@ -516,6 +550,7 @@ const ACTIVE_DEFAULT_PRESET_KEYS = new Set([
   'nouveau-produit',
   'cbd-france',
   'mamadou',
+  'basique',
   'joaillerie-desir',
 ]);
 
