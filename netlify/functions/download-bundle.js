@@ -1,6 +1,8 @@
 import JSZip from 'jszip';
 import { getJsonBody, json } from './_shared.js';
 
+const MAX_BUNDLE_FETCH_CONCURRENCY = 6;
+
 function sanitizeSegment(value, fallback = 'asset') {
   const normalized = String(value || fallback)
     .normalize('NFD')
@@ -10,6 +12,25 @@ function sanitizeSegment(value, fallback = 'asset') {
     .replace(/^-|-$/g, '');
 
   return normalized || fallback;
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const input = Array.isArray(items) ? items : [];
+  const limit = Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1);
+  const results = new Array(input.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= input.length) return;
+      results[currentIndex] = await mapper(input[currentIndex], currentIndex);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, input.length) }, worker));
+  return results;
 }
 
 async function fetchRemoteFile(url) {
@@ -63,7 +84,7 @@ export const handler = async (event) => {
         continue;
       }
 
-      const fetchedFiles = await Promise.all(files.map(async (file, fileIndex) => {
+      const fetchedFiles = await mapWithConcurrency(files, MAX_BUNDLE_FETCH_CONCURRENCY, async (file, fileIndex) => {
         const url = typeof file?.url === 'string' ? file.url : '';
         const fileName = sanitizeSegment(file?.fileName || `resultat-${fileIndex + 1}.png`, `resultat-${fileIndex + 1}.png`);
 
@@ -73,7 +94,7 @@ export const handler = async (event) => {
 
         const content = await fetchRemoteFile(url);
         return { fileName, content };
-      }));
+      });
 
       fetchedFiles.forEach(({ fileName, content }) => {
         zip.file(`${folderName}/${fileName}`, content);

@@ -30,12 +30,14 @@ import { LOCAL_DEFAULT_PRESETS } from './defaultPresets';
 
 const API = '/api';
 const CLIENT_ID_KEY = 'flash_client_id';
-const MAX_BATCH_ITEMS = 20;
-const MAX_BATCH_CONCURRENCY = 20;
+const MAX_BATCH_ITEMS = 50;
+const MAX_BATCH_CONCURRENCY = 3;
+const MAX_SOURCE_UPLOAD_CONCURRENCY = 3;
+const MAX_VARIANT_CONCURRENCY = 2;
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
-const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'CBD France', 'MAMADOU', 'BASIQUE']);
+const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'BIJOUX', 'CBD France', 'MAMADOU', 'BASIQUE', 'RED CROSS']);
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -45,6 +47,30 @@ const THEME_META = {
   outdoor: { icon: TreePine, color: '#10B981', label: 'Outdoor' },
   custom: { icon: Sparkles, color: '#6B7280', label: 'Custom' },
 };
+
+async function settledMapWithConcurrency(items, concurrency, mapper) {
+  const input = Array.isArray(items) ? items : [];
+  const limit = Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1);
+  const results = new Array(input.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= input.length) return;
+      try {
+        const value = await mapper(input[currentIndex], currentIndex);
+        results[currentIndex] = { status: 'fulfilled', value };
+      } catch (err) {
+        results[currentIndex] = { status: 'rejected', reason: err };
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, input.length) }, worker));
+  return results;
+}
 
 function isCbdFrancePreset(preset) {
   if (!preset) return false;
@@ -764,9 +790,13 @@ export default function App() {
 
       const allPresets = Array.isArray(data) ? data.map(normalizePreset) : [];
       const curatedPresets = allPresets.filter((preset) => VISIBLE_DEFAULT_PRESET_NAMES.has(preset?.name));
+      const fallbackPresets = getVisibleFallbackPresets();
+      const redCrossFallback = fallbackPresets.find((preset) => preset?.name === 'RED CROSS') || null;
       const nextPresets = curatedPresets.length > 0
-        ? curatedPresets
-        : (allPresets.length > 0 ? allPresets : getVisibleFallbackPresets());
+        ? (redCrossFallback && !curatedPresets.some((preset) => preset?.name === 'RED CROSS')
+          ? [...curatedPresets, redCrossFallback]
+          : curatedPresets)
+        : (allPresets.length > 0 ? allPresets : fallbackPresets);
       setPresets(nextPresets);
       setSelectedPresetId((currentId) => {
         if (currentId && nextPresets.some((preset) => preset.id === currentId)) {
@@ -1386,7 +1416,7 @@ export default function App() {
     }
 
     const sessionId = crypto.randomUUID();
-    const sourceUploads = await Promise.all(jobSourceImages.map(async (image, index) => {
+    const uploadResults = await settledMapWithConcurrency(jobSourceImages, MAX_SOURCE_UPLOAD_CONCURRENCY, async (image, index) => {
       const imageBase64 = await toBase64(image.file);
       const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
       const uploadRes = await fetch(`${API}/generate`, {
@@ -1406,7 +1436,12 @@ export default function App() {
       }
 
       return uploadData.sourceImageUrl;
-    }));
+    });
+    const firstUploadError = uploadResults.find((result) => result?.status === 'rejected');
+    if (firstUploadError) {
+      throw firstUploadError.reason || new Error("Erreur d'upload");
+    }
+    const sourceUploads = uploadResults.map((result) => result.value);
 
     if (shouldAbort?.()) {
       throw new Error('Generation ignoree car la session a change');
@@ -1464,8 +1499,10 @@ export default function App() {
         onProgress?.(Math.max(35, Math.round(35 + average * 65)));
       };
 
-      const secondaryResults = await Promise.allSettled(
-        secondaryVariants.map(async (variant) => {
+      const secondaryResults = await settledMapWithConcurrency(
+        secondaryVariants,
+        MAX_VARIANT_CONCURRENCY,
+        async (variant) => {
           const res = await fetch(`${API}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1492,7 +1529,7 @@ export default function App() {
           });
 
           return { variant, urls };
-        }),
+        },
       );
 
       const failed = [];
