@@ -522,6 +522,30 @@ export const DEFAULT_PRESET_TEMPLATES = [
     ],
   },
   {
+    key: 'burger',
+    name: 'BURGER',
+    description: 'Remplace uniquement le burger par le nouveau produit, en gardant le packaging et la scene 100% identiques.',
+    theme: 'custom',
+    basePrompt: 'Professional photorealistic image editing. Preserve the entire image exactly unless the prompt explicitly requests a change.',
+    negativePrompt: '',
+    aspectRatio: '4:5',
+    resolution: '1K',
+    outputFormat: 'png',
+    variants: [
+      {
+        key: 'plan-01',
+        name: 'BURGER',
+        promptAddon: '',
+        promptOverride: 'Replace the burger with This new product. Keep everything else completely identical: the torn kraft paper, the branded logo pattern, the paper curl edges, the shadows, the lighting, the perspective. Only the food product changes.',
+        negativePrompt: '',
+        aspectRatio: '4:5',
+        enabledByDefault: true,
+        isMaster: true,
+        sourceMode: 'source',
+      },
+    ],
+  },
+  {
     key: 'joaillerie-desir',
     name: 'Joaillerie desir',
     description: "Famille joaillerie en 4 plans : comprehension, preuve de qualite, projection portee et desir d'offrir.",
@@ -586,6 +610,7 @@ const ACTIVE_DEFAULT_PRESET_KEYS = new Set([
   'mamadou',
   'basique',
   'bijoux',
+  'burger',
   'joaillerie-desir',
 ]);
 
