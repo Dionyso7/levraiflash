@@ -34,10 +34,13 @@ const MAX_BATCH_ITEMS = 50;
 const MAX_BATCH_CONCURRENCY = 3;
 const MAX_SOURCE_UPLOAD_CONCURRENCY = 3;
 const MAX_VARIANT_CONCURRENCY = 2;
+const BURGER_BASE_IMAGE_PATH = '/preset-burger/BaseImage.png';
+const AL_FADI_LABEL_IMAGE_PATH = '/preset-al-fadi/label.jpg';
+const DAGUERRE_SCENE_IMAGE_PATH = '/preset-daguerre/1781017706455-uktycamqbol.jpg';
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
-const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'BIJOUX', 'CBD France', 'MAMADOU', 'BASIQUE', 'RED CROSS', 'BURGER']);
+const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'BIJOUX', 'CBD France', 'MAMADOU', 'BASIQUE', 'RED CROSS', 'BURGER', 'LIBAN', 'Daguerre']);
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
@@ -78,6 +81,29 @@ function isCbdFrancePreset(preset) {
   if (typeof preset?.id === 'string' && preset.id.endsWith('_cbd-france')) return true;
   const name = String(preset?.name || '').toLowerCase();
   return name.includes('cbd') && name.includes('france');
+}
+
+function isBurgerPreset(preset) {
+  if (!preset) return false;
+  const name = String(preset?.name || '').toLowerCase().trim();
+  return name === 'burger';
+}
+
+function isDaguerrePreset(preset) {
+  if (!preset) return false;
+  if (preset?.key === 'daguerre') return true;
+  if (preset?.id === 'local-daguerre') return true;
+  const name = String(preset?.name || '').toLowerCase().trim();
+  return name === 'daguerre';
+}
+
+function isAlFadiPriceTagPreset(preset) {
+  if (!preset) return false;
+  if (preset?.key === 'al-fadi-price-tag') return true;
+  if (preset?.id === 'local-al-fadi-price-tag') return true;
+  const name = String(preset?.name || '').toLowerCase();
+  if (name.includes('liban')) return true;
+  return name.includes('al fadi') && (name.includes('etiquette') || name.includes('étiquette'));
 }
 
 function normalizeTerpeneProfile(profile) {
@@ -160,6 +186,7 @@ function createVariant(overrides = {}) {
     enabledByDefault: overrides.enabledByDefault ?? true,
     isMaster,
     sourceMode: isMaster ? 'source' : 'master',
+    inputStrategy: overrides.inputStrategy || (isMaster ? 'source-all' : 'master'),
   };
 }
 
@@ -623,6 +650,9 @@ export default function App() {
   const batchHistoryLoadedRunRef = useRef(null);
   const sourcePreviewUrlsRef = useRef(new Set());
   const batchSourceTargetItemRef = useRef(null);
+  const burgerBaseUploadedUrlRef = useRef(null);
+  const alFadiLabelUploadedUrlRef = useRef(null);
+  const daguerreSceneUploadedUrlRef = useRef(null);
 
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
@@ -791,12 +821,18 @@ export default function App() {
       const allPresets = Array.isArray(data) ? data.map(normalizePreset) : [];
       const curatedPresets = allPresets.filter((preset) => VISIBLE_DEFAULT_PRESET_NAMES.has(preset?.name));
       const fallbackPresets = getVisibleFallbackPresets();
-      const redCrossFallback = fallbackPresets.find((preset) => preset?.name === 'RED CROSS') || null;
       const nextPresets = curatedPresets.length > 0
-        ? (redCrossFallback && !curatedPresets.some((preset) => preset?.name === 'RED CROSS')
-          ? [...curatedPresets, redCrossFallback]
-          : curatedPresets)
+        ? (() => {
+          const merged = [...curatedPresets];
+          fallbackPresets.forEach((preset) => {
+            if (!merged.some((existing) => existing?.name === preset?.name)) {
+              merged.push(preset);
+            }
+          });
+          return merged;
+        })()
         : (allPresets.length > 0 ? allPresets : fallbackPresets);
+
       setPresets(nextPresets);
       setSelectedPresetId((currentId) => {
         if (currentId && nextPresets.some((preset) => preset.id === currentId)) {
@@ -1416,9 +1452,8 @@ export default function App() {
     }
 
     const sessionId = crypto.randomUUID();
-    const uploadResults = await settledMapWithConcurrency(jobSourceImages, MAX_SOURCE_UPLOAD_CONCURRENCY, async (image, index) => {
-      const imageBase64 = await toBase64(image.file);
-      const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+    const uploadSingle = async ({ file, fileName, index }) => {
+      const imageBase64 = await toBase64(file);
       const uploadRes = await fetch(`${API}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1426,7 +1461,7 @@ export default function App() {
           generationSessionId: sessionId,
           uploadOnly: true,
           imageBase64,
-          uploadFileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
+          uploadFileName: fileName,
         }),
       });
       const uploadData = await readJsonResponse(uploadRes);
@@ -1436,12 +1471,115 @@ export default function App() {
       }
 
       return uploadData.sourceImageUrl;
-    });
-    const firstUploadError = uploadResults.find((result) => result?.status === 'rejected');
-    if (firstUploadError) {
-      throw firstUploadError.reason || new Error("Erreur d'upload");
+    };
+
+    let sourceUploads = [];
+
+    if (isDaguerrePreset(preset)) {
+      if (jobSourceImages.length !== 1) {
+        throw new Error("Daguerre: ajoute une seule photo produit (la reference de scene est ajoutee automatiquement)");
+      }
+
+      let sceneUrl = daguerreSceneUploadedUrlRef.current;
+      if (!sceneUrl) {
+        const sceneRes = await fetch(DAGUERRE_SCENE_IMAGE_PATH, { cache: 'force-cache' });
+        if (!sceneRes.ok) {
+          throw new Error('Daguerre: image de scene introuvable');
+        }
+        const blob = await sceneRes.blob();
+        const sceneFile = new File([blob], 'daguerre-scene.jpg', { type: blob.type || 'image/jpeg' });
+        sceneUrl = await uploadSingle({
+          file: sceneFile,
+          fileName: `flash-daguerre-scene-${sessionId}.jpg`,
+          index: 1,
+        });
+        daguerreSceneUploadedUrlRef.current = sceneUrl;
+      }
+
+      const productImage = jobSourceImages[0];
+      const productExtension = (productImage.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+      const productUrl = await uploadSingle({
+        file: productImage.file,
+        fileName: `flash-daguerre-product-${sessionId}.${productExtension}`,
+        index: 0,
+      });
+
+      sourceUploads = [productUrl, sceneUrl];
+    } else if (isAlFadiPriceTagPreset(preset)) {
+      if (jobSourceImages.length !== 1) {
+        throw new Error("LIBAN: ajoute une seule photo du plat (l'etiquette est ajoutee automatiquement)");
+      }
+
+      let labelUrl = alFadiLabelUploadedUrlRef.current;
+      if (!labelUrl) {
+        const labelRes = await fetch(AL_FADI_LABEL_IMAGE_PATH, { cache: 'force-cache' });
+        if (!labelRes.ok) {
+          throw new Error('LIBAN: etiquette introuvable');
+        }
+        const blob = await labelRes.blob();
+        const labelFile = new File([blob], 'al-fadi-label.jpg', { type: blob.type || 'image/jpeg' });
+        labelUrl = await uploadSingle({
+          file: labelFile,
+          fileName: `flash-al-fadi-label-${sessionId}.jpg`,
+          index: 0,
+        });
+        alFadiLabelUploadedUrlRef.current = labelUrl;
+      }
+
+      const dishImage = jobSourceImages[0];
+      const dishExtension = (dishImage.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+      const dishUrl = await uploadSingle({
+        file: dishImage.file,
+        fileName: `flash-al-fadi-dish-${sessionId}.${dishExtension}`,
+        index: 1,
+      });
+
+      sourceUploads = [dishUrl, labelUrl];
+    } else if (isBurgerPreset(preset)) {
+      if (jobSourceImages.length !== 1) {
+        throw new Error('BURGER: ajoute une seule image produit a remplacer');
+      }
+
+      let burgerBaseUrl = burgerBaseUploadedUrlRef.current;
+      if (!burgerBaseUrl) {
+        const baseRes = await fetch(BURGER_BASE_IMAGE_PATH, { cache: 'force-cache' });
+        if (!baseRes.ok) {
+          throw new Error('BURGER: BaseImage introuvable');
+        }
+        const blob = await baseRes.blob();
+        const baseFile = new File([blob], 'burger-base.png', { type: blob.type || 'image/png' });
+        burgerBaseUrl = await uploadSingle({
+          file: baseFile,
+          fileName: `flash-burger-base-${sessionId}.png`,
+          index: 0,
+        });
+        burgerBaseUploadedUrlRef.current = burgerBaseUrl;
+      }
+
+      const productImage = jobSourceImages[0];
+      const productExtension = (productImage.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+      const productUrl = await uploadSingle({
+        file: productImage.file,
+        fileName: `flash-burger-product-${sessionId}.${productExtension}`,
+        index: 1,
+      });
+
+      sourceUploads = [burgerBaseUrl, productUrl];
+    } else {
+      const uploadResults = await settledMapWithConcurrency(jobSourceImages, MAX_SOURCE_UPLOAD_CONCURRENCY, async (image, index) => {
+        const sourceExtension = (image.file.name?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
+        return uploadSingle({
+          file: image.file,
+          fileName: `flash-source-${sessionId}-${index + 1}.${sourceExtension}`,
+          index,
+        });
+      });
+      const firstUploadError = uploadResults.find((result) => result?.status === 'rejected');
+      if (firstUploadError) {
+        throw firstUploadError.reason || new Error("Erreur d'upload");
+      }
+      sourceUploads = uploadResults.map((result) => result.value);
     }
-    const sourceUploads = uploadResults.map((result) => result.value);
 
     if (shouldAbort?.()) {
       throw new Error('Generation ignoree car la session a change');
@@ -1503,14 +1641,16 @@ export default function App() {
         secondaryVariants,
         MAX_VARIANT_CONCURRENCY,
         async (variant) => {
+          const useSourceFirstImage = variant.inputStrategy === 'source-first-image';
           const res = await fetch(`${API}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               generationSessionId: sessionId,
               preset,
-              variant: { ...variant, sourceMode: 'master' },
-              referenceImageUrls: [masterImageUrl],
+              variant: { ...variant, sourceMode: useSourceFirstImage ? 'source' : 'master' },
+              inputImageUrls: useSourceFirstImage ? [sourceUploads[0]].filter(Boolean) : undefined,
+              referenceImageUrls: useSourceFirstImage ? undefined : [masterImageUrl],
               customPrompt: customPrompt || undefined,
             }),
           });
