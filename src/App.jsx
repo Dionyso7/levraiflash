@@ -40,7 +40,7 @@ const DAGUERRE_SCENE_IMAGE_PATH = '/preset-daguerre/1781017706455-uktycamqbol.jp
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
-const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'BIJOUX', 'CBD France', 'MAMADOU', 'BASIQUE', 'RED CROSS', 'BURGER', 'LIBAN', 'Daguerre']);
+const VISIBLE_DEFAULT_PRESET_NAMES = new Set(['Universel editorial', 'Luxe Pinterest', 'Editorial Overlay', 'Nouveau Produit', 'BIJOUX', 'CBD France', 'MAMADOU', 'BASIQUE', 'RED CROSS', 'BURGER', 'LIBAN', 'Daguerre', 'BOULANGERIE']);
 
 const THEME_META = {
   commerce: { icon: ShoppingBag, color: '#3B82F6', label: 'Commerce' },
