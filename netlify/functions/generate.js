@@ -121,7 +121,7 @@ export const handler = async (event) => {
     const result = await kieRequest('createTask', {
       method: 'POST',
       body: {
-        model: 'nano-banana-2',
+        model: preset?.model || 'nano-banana-2',
         input,
       },
     });

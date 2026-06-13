@@ -36,7 +36,7 @@ const MAX_SOURCE_UPLOAD_CONCURRENCY = 3;
 const MAX_VARIANT_CONCURRENCY = 2;
 const BURGER_BASE_IMAGE_PATH = '/preset-burger/BaseImage.png';
 const AL_FADI_LABEL_IMAGE_PATH = '/preset-al-fadi/label.jpg';
-const DAGUERRE_SCENE_IMAGE_PATH = '/preset-daguerre/1781017706455-uktycamqbol.jpg';
+const DAGUERRE_SCENE_IMAGE_PATH = '/preset-daguerre/daguerre-scene.png';
 const BATCH_DB_NAME = 'flash_batch';
 const BATCH_STORE_NAME = 'batch_state';
 const BATCH_STATE_KEY = 'current';
@@ -212,6 +212,7 @@ function createPreset(overrides = {}) {
     name: overrides.name || 'Nouveau preset',
     description: overrides.description || '',
     theme: overrides.theme || 'custom',
+    model: overrides.model || '',
     basePrompt: overrides.basePrompt || 'Professional product photography, realistic, preserve the exact product details and brand fidelity.',
     negativePrompt: overrides.negativePrompt || '',
     aspectRatio: overrides.aspectRatio || '1:1',

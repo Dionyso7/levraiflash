@@ -364,6 +364,7 @@ export const LOCAL_DEFAULT_PRESETS = [
     name: 'Daguerre',
     description: "Preset en 2 plans : hero sur scene Daguerre de reference fixe, puis scene contextuelle deduite du produit.",
     theme: 'custom',
+    model: 'gpt-image-2-image-to-image',
     basePrompt: 'Professional product photography. Preserve the exact product and follow the reference logic strictly.',
     negativePrompt: '',
     aspectRatio: '3:4',
@@ -375,7 +376,46 @@ export const LOCAL_DEFAULT_PRESETS = [
         key: 'plan-01',
         name: 'Scene Daguerre',
         promptAddon: 'Image 1 = produit fourni. Image 2 = scene Daguerre fixe.',
-        promptOverride: "Product photography. Use image 1 as strict product reference - same shape, colors, textures, proportions. Do not alter the product in any way. Image 1 defines the only real product that must appear in the final image. Use image 2 as strict scene reference for environment only - replicate exactly the butcher's block shape and texture, the camera angle, the background darkness, the lighting direction and contrast, the overall composition and mood. Ignore the hero subject visible in image 2: it is only a placeholder for scene composition and must not be copied, repeated, preserved, or returned. Replace the subject from image 2 completely with the product from image 1. The final output must be a newly generated photograph, not image 2 repeated or minimally altered. If there is any conflict between the two references, image 1 always wins for product identity and image 2 only informs the set, lighting, framing, and atmosphere. SCENE: product centered on a thick square weathered oak butcher's block. Pale worn wood, knife marks visible. 3/4 front angle, eye level. Right side of block in deep shadow. BACKGROUND: solid flat uniform dark brown (#160E05), perfectly smooth, zero texture, zero grain, completely opaque and uniform from edge to edge, no wood texture, no surface reflection, no gradient, no vignette - a pure flat digital color fill behind and around the wooden block, completely separate from it. The wooden block sits in front of this background as a distinct isolated object. LIGHTING: single light from the left, neutral white, no color cast. Strong raking light on product surface. Deep shadow on the right. No fill light. No logo, no props, no garnish, no text, NO PLASTIC, NO PLASTIC BAG. Vertical 3:4, 8k, ultra-sharp.",
+        promptOverride: `Product photography.
+
+IMAGE 1 = strict product reference.
+Reproduce exactly: shape, color, texture, proportions.
+Zero creative interpretation on the product.
+Image 1 is law - do not alter it in any way.
+
+IMAGE 2 = empty scene reference.
+Image 2 shows an empty weathered oak butcher's block
+in a finished photographic set -
+no product is present, the block surface is bare.
+Replicate exactly:
+the block shape, wood grain, knife marks, texture, proportions,
+the camera angle and framing,
+the background color and darkness,
+the lighting direction, contrast, and shadows,
+the overall mood and atmosphere.
+
+Place the product from image 1 onto the empty block surface,
+naturally positioned and convincingly lit
+within the existing scene.
+The product must look as if it was photographed
+on this exact block, in this exact set, under this exact light.
+
+Image 1 wins on all product decisions.
+Image 2 wins on all scene decisions.
+No overlap, no conflict.
+
+QUANTITY:
+If the product is an individual unit,
+represent minimum 2, maximum 3 units.
+Never 1 alone. Never more than 3.
+Arranged naturally on the block,
+slight spacing between units,
+consistent orientation.
+
+No logo, no props, no garnish, no text,
+NO PLASTIC, NO PLASTIC BAG.
+
+Vertical 3:4, 8K, ultra-sharp.`,
         negativePrompt: 'do not return image 2 unchanged, do not copy the subject from image 2, do not preserve the original product visible in image 2, no duplicated scene-reference hero object, no unchanged reference photo, no near-identical copy of image 2',
         aspectRatio: '3:4',
         enabledByDefault: true,
