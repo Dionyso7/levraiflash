@@ -376,46 +376,46 @@ export const LOCAL_DEFAULT_PRESETS = [
         key: 'plan-01',
         name: 'Scene Daguerre',
         promptAddon: 'Image 1 = produit fourni. Image 2 = scene Daguerre fixe.',
-        promptOverride: `Product photography.
+        promptOverride: ` Product photography.
 
-IMAGE 1 = strict product reference.
-Reproduce exactly: shape, color, texture, proportions.
-Zero creative interpretation on the product.
-Image 1 is law - do not alter it in any way.
+ IMAGE 1 = strict product reference.
+ Reproduce exactly: shape, color, texture, proportions.
+ Zero creative interpretation on the product.
+ Image 1 is law — do not alter it in any way.
 
-IMAGE 2 = empty scene reference.
-Image 2 shows an empty weathered oak butcher's block
-in a finished photographic set -
-no product is present, the block surface is bare.
-Replicate exactly:
-the block shape, wood grain, knife marks, texture, proportions,
-the camera angle and framing,
-the background color and darkness,
-the lighting direction, contrast, and shadows,
-the overall mood and atmosphere.
+ IMAGE 2 = empty scene reference.
+ Image 2 shows an empty weathered oak butcher's block
+ in a finished photographic set —
+ no product is present, the block surface is bare.
+ Replicate exactly:
+ the block shape, wood grain, knife marks, texture, proportions,
+ the camera angle and framing,
+ the background color and darkness,
+ the lighting direction, contrast, and shadows,
+ the overall mood and atmosphere.
 
-Place the product from image 1 onto the empty block surface,
-naturally positioned and convincingly lit
-within the existing scene.
-The product must look as if it was photographed
-on this exact block, in this exact set, under this exact light.
+ Place the product from image 1 onto the empty block surface,
+ naturally positioned and convincingly lit
+ within the existing scene.
+ The product must look as if it was photographed
+ on this exact block, in this exact set, under this exact light.
 
-Image 1 wins on all product decisions.
-Image 2 wins on all scene decisions.
-No overlap, no conflict.
+ Image 1 wins on all product decisions.
+ Image 2 wins on all scene decisions.
+ No overlap, no conflict.
 
-QUANTITY:
-If the product is an individual unit,
-represent minimum 2, maximum 3 units.
-Never 1 alone. Never more than 3.
-Arranged naturally on the block,
-slight spacing between units,
-consistent orientation.
+ QUANTITY:
+ If the product is an individual unit,
+ represent minimum 2, maximum 3 units.
+ Never 1 alone. Never more than 3.
+ Arranged naturally on the block,
+ slight spacing between units,
+ consistent orientation.
 
-No logo, no props, no garnish, no text,
-NO PLASTIC, NO PLASTIC BAG.
+ No logo, no props, no garnish, no text,
+ NO PLASTIC, NO PLASTIC BAG.
 
-Vertical 3:4, 8K, ultra-sharp.`,
+ Vertical 3:4, 8K, ultra-sharp. `,
         negativePrompt: 'do not return image 2 unchanged, do not copy the subject from image 2, do not preserve the original product visible in image 2, no duplicated scene-reference hero object, no unchanged reference photo, no near-identical copy of image 2',
         aspectRatio: '3:4',
         enabledByDefault: true,

@@ -1,5 +1,12 @@
 import { getJsonBody, json, kieRequest, uploadToKieBase64 } from './_shared.js';
 
+function isDaguerrePreset(preset) {
+  if (!preset) return false;
+  if (preset?.key === 'daguerre') return true;
+  if (preset?.id === 'local-daguerre') return true;
+  return String(preset?.name || '').toLowerCase().trim() === 'daguerre';
+}
+
 export const handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return json(405, { error: 'Method Not Allowed' });
@@ -118,10 +125,14 @@ export const handler = async (event) => {
       output_format: preset.outputFormat || 'png',
     };
 
+    const requestedModel = typeof preset?.model === 'string' && preset.model.trim()
+      ? preset.model.trim()
+      : (isDaguerrePreset(preset) ? 'gpt-image-2-image-to-image' : 'nano-banana-2');
+
     const result = await kieRequest('createTask', {
       method: 'POST',
       body: {
-        model: preset?.model || 'nano-banana-2',
+        model: requestedModel,
         input,
       },
     });

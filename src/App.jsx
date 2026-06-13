@@ -238,6 +238,22 @@ function normalizePreset(preset) {
   });
 }
 
+function mergePresetWithFallback(existingPreset, fallbackPreset) {
+  const current = normalizePreset(existingPreset);
+  const fallback = normalizePreset(fallbackPreset);
+  const mergedVariants = fallback.variants.map((variant, index) => ({
+    ...variant,
+    id: current.variants[index]?.id || variant.id,
+  }));
+
+  return normalizePreset({
+    ...current,
+    ...fallback,
+    id: current.id || fallback.id,
+    variants: mergedVariants,
+  });
+}
+
 function normalizeAssets(images = []) {
   return images.flatMap((item, index) => {
     if (typeof item === 'string') {
@@ -826,9 +842,15 @@ export default function App() {
         ? (() => {
           const merged = [...curatedPresets];
           fallbackPresets.forEach((preset) => {
-            if (!merged.some((existing) => existing?.name === preset?.name)) {
+            const existingIndex = merged.findIndex((existing) => existing?.name === preset?.name);
+            if (existingIndex === -1) {
               merged.push(preset);
+              return;
             }
+
+            // The local preset definitions are the authoritative runtime config
+            // for built-in presets like Daguerre, even when an older copy exists in storage.
+            merged[existingIndex] = mergePresetWithFallback(merged[existingIndex], preset);
           });
           return merged;
         })()
@@ -1488,10 +1510,14 @@ export default function App() {
           throw new Error('Daguerre: image de scene introuvable');
         }
         const blob = await sceneRes.blob();
-        const sceneFile = new File([blob], 'daguerre-scene.jpg', { type: blob.type || 'image/jpeg' });
+        const sceneMimeType = blob.type || 'image/png';
+        const sceneExtension = sceneMimeType.includes('png')
+          ? 'png'
+          : (sceneMimeType.includes('webp') ? 'webp' : 'jpg');
+        const sceneFile = new File([blob], `daguerre-scene.${sceneExtension}`, { type: sceneMimeType });
         sceneUrl = await uploadSingle({
           file: sceneFile,
-          fileName: `flash-daguerre-scene-${sessionId}.jpg`,
+          fileName: `flash-daguerre-scene-${sessionId}.${sceneExtension}`,
           index: 1,
         });
         daguerreSceneUploadedUrlRef.current = sceneUrl;
@@ -1505,6 +1531,7 @@ export default function App() {
         index: 0,
       });
 
+      // Daguerre relies on image 1 = product and image 2 = fixed scene reference.
       sourceUploads = [productUrl, sceneUrl];
     } else if (isAlFadiPriceTagPreset(preset)) {
       if (jobSourceImages.length !== 1) {
